@@ -1,0 +1,2 @@
+MyTree Professional v1.8.0 RC1 Rev.11
+Correctif critique de migration SQLite pour preferred_language

@@ -1,0 +1,19 @@
+MY TREE PROFESSIONAL — SPRINT 1.5 ALPHA 2
+
+AJOUTS
+- Missions : priorité, progression, rapport, participants et présences.
+- Routes mission : détail, modification, archivage et mise à jour de présence.
+- Notifications : compteur, ouverture, lecture individuelle et lecture globale.
+- Recherche universelle : résultats cliquables et recherche des espèces.
+- Tableau de bord : quatre nouveaux indicateurs.
+
+BASE DE DONNÉES
+- Nouvelle table : mission_participants.
+- Nouvelles colonnes missions : priority, completed_count, report.
+- Migration automatique compatible avec une base antérieure.
+
+CONTRÔLES EFFECTUÉS
+- Compilation Python : réussie.
+- Création du schéma SQLite dans une base temporaire : réussie.
+- Vérification de la requête d'insertion d'une mission : réussie.
+- Test Flask complet non exécuté dans l'environnement de génération, car les dépendances ne sont pas disponibles hors ligne.

@@ -1,0 +1,8 @@
+My Tree Professional Sprint 1.3
+
+- Compilation Python : OK
+- Structure ZIP : OK
+- Routes ajoutées contrôlées statiquement : OK
+- Migration SQLite intégrée : OK
+
+Le test d'exécution Flask complet n'a pas été possible dans l'environnement de génération hors ligne, car les dépendances Python n'y étaient pas disponibles.

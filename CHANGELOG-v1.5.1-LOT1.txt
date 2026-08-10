@@ -1,0 +1,36 @@
+MY TREE PROFESSIONAL — v1.5.1 LOT 1
+===================================
+
+LOT 1 : UTILISATEURS ET BÉNÉVOLES
+
+CORRECTIONS
+- BUG-001 corrigé : ajout d’un bénévole depuis l’administration via /volunteers/new.
+- BUG-002 corrigé pour les formulaires du Lot 1 : boutons Enregistrer et Annuler présents.
+- Contrôle des doublons téléphone, e-mail et identifiant.
+- Validation de la correspondance Wilaya / Commune.
+- Messages d’erreur conservés sur le formulaire sans perte des champs saisis.
+
+BÉNÉVOLES
+- Bouton « Nouveau bénévole » dans la liste.
+- Création, modification, activation et désactivation.
+- Fiche individuelle avec statistiques : plantations, arrosages et missions.
+- Recherche par nom, téléphone ou e-mail.
+- Filtres sexe, wilaya, commune et comptes inactifs.
+- Champs supplémentaires : date de naissance, adresse, compétences, disponibilités et URL de photo.
+- Mot de passe initial et réinitialisation facultative lors de la modification.
+
+UTILISATEURS
+- Liste séparée avec recherche et filtre actif/inactif.
+- Création et modification sur des pages dédiées.
+- Gestion du rôle, de l’identifiant, du mot de passe et de l’état du compte.
+- Protection contre la désactivation de son propre compte.
+- Historique des connexions réussies et échouées.
+
+BASE DE DONNÉES
+- Migration automatique non destructive des nouvelles colonnes de users.
+- Nouvelle table login_history.
+- Migrations idempotentes : elles peuvent être exécutées plusieurs fois.
+
+COMPATIBILITÉ
+- Les fonctionnalités des versions précédentes sont conservées.
+- La base SQLite existante est mise à jour automatiquement au démarrage.

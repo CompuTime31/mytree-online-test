@@ -1,0 +1,6 @@
+[OK] Compilation Python avec py_compile
+[OK] Analyse syntaxique AST
+[OK] Création des 24 tables du schéma SQLite en mémoire
+[OK] Insertion SQL d'une mission avec les nouveaux champs
+[OK] Présence de la migration mission_participants / priority / completed_count / report
+[À TESTER SUR PC] Démarrage Flask/Waitress et parcours navigateur complet

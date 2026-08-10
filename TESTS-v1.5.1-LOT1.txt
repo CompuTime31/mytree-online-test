@@ -1,0 +1,21 @@
+MY TREE PROFESSIONAL — TESTS v1.5.1 LOT 1
+=========================================
+
+RÉALISÉS DANS L’ENVIRONNEMENT DE GÉNÉRATION
+- Compilation Python : OK.
+- Analyse syntaxique de tous les modèles Jinja intégrés : OK.
+- Création complète du schéma SQLite : OK.
+- Présence des nouvelles colonnes bénévoles/utilisateurs : OK.
+- Présence de la table login_history : OK.
+- Insertion réelle d’un bénévole dans SQLite : OK.
+- Exécution répétée des migrations (idempotence) : OK.
+- Import de l’application avec stubs Flask : OK.
+
+À VÉRIFIER SUR LE PC UTILISATEUR
+- Test HTTP complet avec Flask/Waitress et navigateur.
+- Création d’un bénévole depuis /volunteers/new.
+- Modification, désactivation et réactivation.
+- Création et modification d’un utilisateur.
+- Navigation des boutons Annuler du Lot 1.
+
+Note : les paquets Flask/Waitress n’étaient pas disponibles dans l’environnement hors ligne ; le test HTTP réel n’a donc pas pu y être exécuté.
