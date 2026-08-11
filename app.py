@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v1.8.0 RC1 Rev.11 — Online PostgreSQL / Neon'
+APP_VERSION='v1.8.0 RC1 Rev.12 — Correctif verrou initialisation Neon'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -165,25 +165,58 @@ def seed(c):
   z=c.execute('SELECT id FROM zones ORDER BY id LIMIT 1').fetchone()['id']; sp=c.execute("SELECT id FROM species WHERE name_fr='Caroubier'").fetchone()['id']; u=c.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
   c.execute("INSERT INTO trees(tree_code,qr_code,species_id,species,project_id,zone_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,health_status,watering_status,approval_status,approved_by_user_id,approved_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",('TREE-0001','QR-TREE-0001',sp,'Caroubier',p['id'],z,'2026-11-15',u,'Super Admin',35.767,-0.606,'Bon','À jour','approved',u,datetime.now().isoformat(timespec='minutes'),datetime.now().isoformat(timespec='minutes')))
 
+# Verrou PostgreSQL stable et propre à l'initialisation MyTree.
+# Le verrou est de niveau session : il reste détenu après COMMIT et est
+# automatiquement libéré si la connexion disparaît.
+MYTREE_INIT_LOCK_KEY=62872431529701
+
 def init_db():
  c=db()
- c.executescript(SCHEMA)
- migrate_legacy(c)
- seed(c)
- # RC1: indexation des recherches et listes les plus utilisées.
- c.executescript("""
- CREATE INDEX IF NOT EXISTS idx_trees_project_zone ON trees(project_id,zone_id);
- CREATE INDEX IF NOT EXISTS idx_trees_approval_active ON trees(approval_status,active);
- CREATE INDEX IF NOT EXISTS idx_trees_gps ON trees(latitude,longitude);
- CREATE INDEX IF NOT EXISTS idx_trees_species ON trees(species_id,species);
- CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role,active);
- CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,is_read,created_at);
- CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
- CREATE INDEX IF NOT EXISTS idx_events_start_status ON events(start_at,status,active);
- CREATE INDEX IF NOT EXISTS idx_tasks_start_status ON operational_tasks(start_at,status);
- """)
- c.commit()
- c.close()
+ init_lock=False
+ try:
+  if using_postgres():
+   # Vercel peut démarrer plusieurs fonctions Flask en parallèle. Sans ce
+   # verrou, deux instances peuvent exécuter CREATE TABLE simultanément et
+   # PostgreSQL peut lever pg_type_typname_nsp_index / UniqueViolation.
+   c.execute('SELECT pg_advisory_lock(?)',(MYTREE_INIT_LOCK_KEY,))
+   c.commit()
+   init_lock=True
+
+  c.executescript(SCHEMA)
+  migrate_legacy(c)
+  seed(c)
+  # RC1: indexation des recherches et listes les plus utilisées.
+  c.executescript("""
+  CREATE INDEX IF NOT EXISTS idx_trees_project_zone ON trees(project_id,zone_id);
+  CREATE INDEX IF NOT EXISTS idx_trees_approval_active ON trees(approval_status,active);
+  CREATE INDEX IF NOT EXISTS idx_trees_gps ON trees(latitude,longitude);
+  CREATE INDEX IF NOT EXISTS idx_trees_species ON trees(species_id,species);
+  CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role,active);
+  CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,is_read,created_at);
+  CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
+  CREATE INDEX IF NOT EXISTS idx_events_start_status ON events(start_at,status,active);
+  CREATE INDEX IF NOT EXISTS idx_tasks_start_status ON operational_tasks(start_at,status);
+  """)
+  c.commit()
+ except Exception:
+  # Une erreur PostgreSQL laisse la transaction en état aborted : rollback
+  # avant toute tentative de libération du verrou.
+  try:
+   c.rollback()
+  except Exception:
+   pass
+  raise
+ finally:
+  if init_lock:
+   try:
+    c.execute('SELECT pg_advisory_unlock(?)',(MYTREE_INIT_LOCK_KEY,))
+    c.commit()
+   except Exception:
+    try:
+     c.rollback()
+    except Exception:
+     pass
+  c.close()
 
 SUPPORTED_LANGS=('fr','ar','en')
 I18N={
