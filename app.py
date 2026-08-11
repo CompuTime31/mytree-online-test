@@ -3,17 +3,19 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from datetime import datetime, date, timedelta
 import sqlite3, os, io, json, shutil, tempfile
+from db_compat import connect_db, DBIntegrityError, using_postgres, database_label, table_count, export_database_json
 from data_catalogs import SPECIES_CATALOG, EQUIPMENT_CATALOG
 import qrcode
 
 BASE_DIR=os.path.abspath(os.path.dirname(__file__))
-DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
+# Sous Vercel/Neon, aucune base n'est écrite dans /var/task. SQLite reste disponible en local.
+DATA_DIR=os.environ.get('MYTREE_DATA_DIR', '/tmp' if using_postgres() else BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v1.8.0 RC1 Rev.11 — Correctif migration multilingue'
+APP_VERSION='v1.8.0 RC1 Rev.11 — Online PostgreSQL / Neon'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -76,7 +78,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 '''
 
 def db():
- c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
+ return connect_db(DB_PATH)
 
 def columns(c,table): return {r['name'] for r in c.execute(f'PRAGMA table_info({table})')}
 def add_column(c,table,definition):
@@ -519,7 +521,7 @@ def register():
    role=c.execute("SELECT id FROM roles WHERE name='volunteer'").fetchone()['id']; name=user_display_name(values['first_name'],values['last_name'])
    try:
     cur=c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,birth_date,address,skills,availability,photo_url,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(values['first_name'],values['last_name'],name,values['sex'],values['phone'],values['email'],values['phone'],generate_password_hash(password),role,'volunteer',1,values['wilaya_id'],values['commune_id'],values['birth_date'],values['address'],values['skills'],values['availability'],values['photo_url'],datetime.now().isoformat(timespec='minutes'))); c.commit(); uid=cur.lastrowid; c.close(); log_action('self_register','user',uid); flash('Compte créé. Vous pouvez vous connecter immédiatement.'); return redirect('/login')
-   except sqlite3.IntegrityError: errors=['Ce téléphone, cet e-mail ou ce nom d’utilisateur est déjà utilisé.']
+   except DBIntegrityError: errors=['Ce téléphone, cet e-mail ou ce nom d’utilisateur est déjà utilisé.']
   for error in errors: flash(error)
  c.close(); return page('Inscription bénévole','''<div class="card"><h2>Nouveau bénévole</h2><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Prénom<input name="first_name" value="{{request.form.get('first_name','')}}" required></label><label>Nom<input name="last_name" value="{{request.form.get('last_name','')}}" required></label><label>Sexe<select name="sex"><option {% if request.form.get('sex')=='Homme' %}selected{% endif %}>Homme</option><option {% if request.form.get('sex')=='Femme' %}selected{% endif %}>Femme</option></select></label><label>Téléphone<input name="phone" value="{{request.form.get('phone','')}}" required></label><label>Email facultatif<input type="email" name="email" value="{{request.form.get('email','')}}"></label><label>Mot de passe<input type="password" name="password" minlength="6" required></label><label>Wilaya<select name="wilaya_id"><option value="">—</option>{% for x in wilayas %}<option value="{{x.id}}" {% if request.form.get('wilaya_id')|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">—</option>{% for x in communes %}<option value="{{x.id}}" {% if request.form.get('commune_id')|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label class="full">Adresse<input name="address" value="{{request.form.get('address','')}}"></label><div class="full"><button class="btn">Créer mon compte</button> <a class="btn alt" href="/login">Annuler</a></div></form></div>''',**opts)
 
@@ -714,7 +716,7 @@ def volunteer_new():
   if not errors:
    try:
     cur=c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,birth_date,address,skills,availability,photo_url,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(values['first_name'],values['last_name'],user_display_name(values['first_name'],values['last_name']),values['sex'],values['phone'],values['email'],values['phone'],generate_password_hash(password),role['id'],'volunteer',1,values['wilaya_id'],values['commune_id'],values['birth_date'],values['address'],values['skills'],values['availability'],values['photo_url'],datetime.now().isoformat(timespec='minutes'))); c.commit(); uid=cur.lastrowid; c.close(); log_action('create','volunteer',uid); flash('Bénévole ajouté avec succès.'); return redirect('/volunteers/'+str(uid))
-   except sqlite3.IntegrityError: errors=['Impossible d’enregistrer : le téléphone, l’e-mail ou le nom d’utilisateur existe déjà.']
+   except DBIntegrityError: errors=['Impossible d’enregistrer : le téléphone, l’e-mail ou le nom d’utilisateur existe déjà.']
   for error in errors: flash(error)
  c.close(); return page('Nouveau bénévole',VOLUNTEER_FORM,form_title='Nouveau bénévole',u=None,submit_label='Enregistrer',cancel_url='/volunteers',password_required=True,**opts)
 
@@ -984,7 +986,7 @@ def user_new():
   if not errors:
    try:
     cur=c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,birth_date,address,skills,availability,photo_url,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(values['first_name'],values['last_name'],user_display_name(values['first_name'],values['last_name']),values['sex'],values['phone'],values['email'],username,generate_password_hash(password),request.form['role_id'],role['name'],1,values['wilaya_id'],values['commune_id'],values['birth_date'],values['address'],values['skills'],values['availability'],values['photo_url'],datetime.now().isoformat(timespec='minutes')));c.commit();uid=cur.lastrowid;c.close();log_action('create','user',uid);flash('Utilisateur ajouté.');return redirect('/users')
-   except sqlite3.IntegrityError: errors=['Impossible d’enregistrer cet utilisateur : donnée déjà utilisée.']
+   except DBIntegrityError: errors=['Impossible d’enregistrer cet utilisateur : donnée déjà utilisée.']
   for e in errors: flash(e)
  c.close(); return page('Nouvel utilisateur',USER_FORM,u=None,roles=roles,password_required=True,form_title='Nouvel utilisateur',cancel_url='/users',photo=photo_fields(request.form.get('photo_url',''),prefix='userphoto'),**opts)
 
@@ -1391,7 +1393,7 @@ def team_requests_page():
 def team_request_accept(rid):
  if not is_admin(): return redirect('/teams')
  c=db(); r=c.execute('SELECT * FROM team_join_requests WHERE id=?',(rid,)).fetchone(); now=datetime.now().isoformat(timespec='minutes')
- if r and r['status']=='pending': c.execute("UPDATE team_join_requests SET status='accepted',reviewed_by_user_id=?,reviewed_at=? WHERE id=?",(session['uid'],now,rid)); c.execute("INSERT OR REPLACE INTO team_members(team_id,user_id,status,joined_at,approved_by_user_id,approved_at) VALUES(?,?,'active',?,?,?)",(r['team_id'],r['user_id'],now,session['uid'],now)); c.execute('UPDATE users SET team_id=? WHERE id=?',(r['team_id'],r['user_id'])); c.commit()
+ if r and r['status']=='pending': c.execute("UPDATE team_join_requests SET status='accepted',reviewed_by_user_id=?,reviewed_at=? WHERE id=?",(session['uid'],now,rid)); c.execute("INSERT INTO team_members(team_id,user_id,status,joined_at,approved_by_user_id,approved_at) VALUES(?,?,'active',?,?,?) ON CONFLICT(team_id,user_id) DO UPDATE SET status=excluded.status,joined_at=excluded.joined_at,approved_by_user_id=excluded.approved_by_user_id,approved_at=excluded.approved_at",(r['team_id'],r['user_id'],now,session['uid'],now)); c.execute('UPDATE users SET team_id=? WHERE id=?',(r['team_id'],r['user_id'])); c.commit()
  c.close(); log_action('accept','team_request',rid); flash('Demande acceptée.'); return redirect('/teams/'+str(r['team_id']) if r else '/teams')
 
 @app.post('/team-requests/<int:rid>/reject')
@@ -1516,7 +1518,7 @@ def mission_new():
    cur=c.execute("INSERT INTO missions(code,title,mission_type,status,priority,project_id,zone_id,team_id,leader_user_id,start_at,end_at,target_count,completed_count,description,report,latitude,longitude,active,created_by_user_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,NULL,?,?,1,?,?,?)",(request.form['code'].strip(),request.form['title'].strip(),request.form.get('mission_type'),request.form.get('status') or 'Planifiée',request.form.get('priority') or 'Normale',request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('team_id') or None,request.form.get('leader_user_id') or None,request.form.get('start_at'),request.form.get('end_at'),request.form.get('target_count') or 0,request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,session['uid'],now,now)); mid=cur.lastrowid
    for uid in request.form.getlist('participant_ids'): c.execute("INSERT OR IGNORE INTO mission_participants(mission_id,user_id,attendance_status,created_at) VALUES(?,?,'Invité',?)",(mid,uid,now))
    c.commit()
-  except sqlite3.IntegrityError:
+  except DBIntegrityError:
    c.close(); flash('Le code de mission existe déjà.'); return redirect('/missions/new')
   c.close(); log_action('create','mission',mid,request.form['title']); notify('Nouvelle mission',request.form['title'],'/missions/'+str(mid),request.form.get('leader_user_id') or None); flash('Mission créée.'); return redirect('/missions/'+str(mid))
  c.close(); return page('Nouvelle mission',"""<div class="card"><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Code<input name="code" required></label><label>Titre<input name="title" required></label><label>Type<select name="mission_type"><option>Plantation</option><option>Arrosage</option><option>Entretien</option><option>Inventaire</option><option>Nettoyage</option></select></label><label>Statut<select name="status"><option>Planifiée</option><option>En cours</option><option>Terminée</option><option>Annulée</option></select></label><label>Priorité<select name="priority"><option>Basse</option><option selected>Normale</option><option>Haute</option><option>Urgente</option></select></label><label>Projet<select name="project_id"><option value="">—</option>{% for x in projects %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id"><option value="">—</option>{% for x in zones %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Équipe<select name="team_id"><option value="">—</option>{% for x in teams %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Responsable<select name="leader_user_id"><option value="">—</option>{% for x in leaders %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at"></label><label>Fin<input type="datetime-local" name="end_at"></label><label>Objectif<input type="number" min="0" name="target_count"></label><label>Latitude<input type="number" step="any" name="latitude"></label><label>Longitude<input type="number" step="any" name="longitude"></label><label class="full">Participants<select name="participant_ids" multiple size="7">{% for x in volunteers %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select><span class="sub">Maintenir Ctrl pour sélectionner plusieurs bénévoles.</span></label><label class="full">Description<textarea name="description"></textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/missions">Annuler</a></div></form></div>""",teams=teams,leaders=leaders,**opts)
@@ -2163,7 +2165,7 @@ def member_membership(mid):
   year=int(request.form['membership_year']); amount=float(request.form['amount']); receipt='COT-'+str(year)+'-'+datetime.now().strftime('%H%M%S')
   try:
    c.execute('INSERT INTO memberships(member_id,membership_year,amount,status,paid_at,payment_method,receipt_number,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(mid,year,amount,'Payée',request.form.get('paid_at') or date.today().isoformat(),request.form.get('payment_method') or 'Espèces',receipt,session['uid'],datetime.now().isoformat(timespec='minutes'))); msid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']; c.execute('INSERT INTO cash_movements(fund_type,movement_type,amount,category,description,reference_type,reference_id,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',('Cotisations','Entrée',amount,'Cotisation annuelle','Cotisation '+str(year)+' - '+m['member_number'],'membership',msid,'Validé',session['uid'],datetime.now().isoformat(timespec='minutes'))); c.commit(); flash('Cotisation enregistrée.')
-  except sqlite3.IntegrityError: flash('Cette année est déjà enregistrée pour cet adhérent.')
+  except DBIntegrityError: flash('Cette année est déjà enregistrée pour cet adhérent.')
   c.close(); return redirect('/members/'+str(mid))
  c.close(); return page('Nouvelle cotisation',"""<div class='card'><h3>{{m.last_name}} {{m.first_name}}</h3><form method='post' class='form'><label>Année<input type='number' name='membership_year' value='{{year}}' required></label><label>Montant (DA)<input type='number' step='0.01' min='0' name='amount' required></label><label>Date<input type='date' name='paid_at' value='{{today}}'></label><label>Mode<select name='payment_method'><option>Espèces</option><option>Virement</option><option>Chèque</option></select></label><div class='full'><button class='btn'>Encaisser</button></div></form></div>""",m=m,year=date.today().year,today=date.today().isoformat())
 
@@ -2596,17 +2598,22 @@ def backup_page():
  if not is_admin():
   flash('Accès réservé à l’administration.')
   return redirect('/')
- c=db(); check=c.execute('PRAGMA integrity_check').fetchone()[0]; tables=c.execute("SELECT COUNT(*) n FROM sqlite_master WHERE type='table'").fetchone()['n']; c.close()
- size=os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+ c=db(); tables=table_count(c); c.close()
+ if using_postgres():
+  return page('Sauvegarde et restauration',"""<div class='grid two'><div class='card'><h2>Créer une sauvegarde logique</h2><p>La version Online utilise PostgreSQL / Neon. MyTree peut exporter les données applicatives au format JSON.</p><p><b>Base :</b> PostgreSQL / Neon<br><b>Tables :</b> {{tables}}</p><a class='btn' href='/backup/download'>💾 Télécharger l’export JSON</a></div><div class='card danger-zone'><h2>Restauration</h2><p>La restauration automatique d’un ancien fichier SQLite est désactivée sur la version Online afin d’éviter d’écraser ou d’incohérer la base Neon.</p><p class='sub'>La migration d’une ancienne base SQLite vers Neon doit être faite par un outil de migration contrôlé.</p></div></div>""",tables=tables)
+ check='ok'; size=os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
  return page('Sauvegarde et restauration',"""<div class='grid two'><div class='card'><h2>Créer une sauvegarde</h2><p>La sauvegarde contient la base SQLite complète : arbres, utilisateurs, dons, caisse, pépinière, matériel et paramètres.</p><p><b>État :</b> {{check}}<br><b>Tables :</b> {{tables}}<br><b>Taille :</b> {{'%.2f'|format(size/1024/1024)}} Mo</p><a class='btn' href='/backup/download'>💾 Télécharger la sauvegarde</a></div><div class='card danger-zone'><h2>Restaurer une sauvegarde</h2><p>Cette opération remplace la base actuelle. Une copie de sécurité automatique est créée avant restauration.</p><form method='post' action='/backup/restore' enctype='multipart/form-data' onsubmit="return confirm('Restaurer cette base et remplacer les données actuelles ?')"><label>Fichier SQLite<input type='file' name='backup_file' accept='.db,.sqlite,.sqlite3' required></label><p><button class='btn red'>Restaurer</button></p></form></div></div>""",check=check,tables=tables,size=size)
 
 @app.route('/backup/download')
 @login_required
 def backup_download():
  if not is_admin(): return redirect('/')
- if not os.path.exists(DB_PATH):
-  init_db()
  stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
+ if using_postgres():
+  c=db(); payload={'generated_at':datetime.now().isoformat(timespec='seconds'),'version':APP_VERSION,'database':'PostgreSQL/Neon','tables':export_database_json(c)}; c.close()
+  raw=json.dumps(payload,ensure_ascii=False,indent=2,default=str).encode('utf-8')
+  return send_file(io.BytesIO(raw),as_attachment=True,download_name=f'MyTree-backup-{stamp}.json',mimetype='application/json')
+ if not os.path.exists(DB_PATH): init_db()
  tmp=os.path.join(tempfile.gettempdir(),f'mytree-backup-{stamp}.db')
  src=sqlite3.connect(DB_PATH); dst=sqlite3.connect(tmp); src.backup(dst); dst.close(); src.close()
  log_action('backup','database',None,os.path.basename(tmp))
@@ -2616,6 +2623,8 @@ def backup_download():
 @login_required
 def backup_restore():
  if not is_admin(): return redirect('/')
+ if using_postgres():
+  flash('La restauration SQLite directe est désactivée sur PostgreSQL / Neon. Utilisez l’outil de migration dédié.'); return redirect('/backup')
  f=request.files.get('backup_file')
  if not f or not f.filename:
   flash('Sélectionnez une sauvegarde SQLite.'); return redirect('/backup')
@@ -2636,15 +2645,13 @@ def backup_restore():
 
 @app.route('/healthz')
 def healthz():
- """Contrôle local de disponibilité utilisé pendant les tests RC1."""
+ """Contrôle de disponibilité compatible SQLite local et PostgreSQL / Neon."""
  try:
-  c=db()
-  integrity=c.execute('PRAGMA quick_check').fetchone()[0]
-  tables=c.execute("SELECT COUNT(*) n FROM sqlite_master WHERE type='table'").fetchone()['n']
-  c.close()
-  return jsonify({'status':'ok' if integrity=='ok' else 'degraded','version':APP_VERSION,'database':integrity,'tables':tables}), (200 if integrity=='ok' else 503)
+  c=db(); c.execute('SELECT 1').fetchone(); tables=table_count(c); c.close()
+  return jsonify({'status':'ok','version':APP_VERSION,'database':database_label(),'tables':tables}),200
  except Exception as exc:
-  return jsonify({'status':'error','version':APP_VERSION,'error':str(exc)}),503
+  return jsonify({'status':'error','version':APP_VERSION,'database':database_label(),'error':str(exc)}),503
+
 
 @app.errorhandler(404)
 def not_found(error):
