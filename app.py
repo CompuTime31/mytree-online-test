@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v1.8.0 RC1 Rev.12 — Correctif verrou initialisation Neon'
+APP_VERSION='v1.8.0 RC1 Rev.13 — Initialisation Neon rapide et idempotente'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -165,22 +165,96 @@ def seed(c):
   z=c.execute('SELECT id FROM zones ORDER BY id LIMIT 1').fetchone()['id']; sp=c.execute("SELECT id FROM species WHERE name_fr='Caroubier'").fetchone()['id']; u=c.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
   c.execute("INSERT INTO trees(tree_code,qr_code,species_id,species,project_id,zone_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,health_status,watering_status,approval_status,approved_by_user_id,approved_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",('TREE-0001','QR-TREE-0001',sp,'Caroubier',p['id'],z,'2026-11-15',u,'Super Admin',35.767,-0.606,'Bon','À jour','approved',u,datetime.now().isoformat(timespec='minutes'),datetime.now().isoformat(timespec='minutes')))
 
-# Verrou PostgreSQL stable et propre à l'initialisation MyTree.
-# Le verrou est de niveau session : il reste détenu après COMMIT et est
-# automatiquement libéré si la connexion disparaît.
-MYTREE_INIT_LOCK_KEY=62872431529701
+# Initialisation PostgreSQL / Neon — Rev.13.
+#
+# Sur Vercel, plusieurs fonctions peuvent démarrer indépendamment. La Rev.12
+# protégeait l'initialisation avec un verrou de session, mais une fonction
+# pouvait rester en attente et produire des erreurs 500 intermittentes.
+#
+# Rev.13 :
+#   1) chemin rapide : si le schéma est déjà prêt, aucun DDL/seed n'est rejoué ;
+#   2) compatibilité avec la base déjà initialisée par Rev.12 : détection des
+#      tables + colonnes critiques puis création d'un marqueur léger ;
+#   3) si une vraie initialisation est nécessaire, verrou TRANSACTIONNEL
+#      pg_advisory_xact_lock, automatiquement libéré au commit/rollback.
+MYTREE_INIT_LOCK_KEY=62872431529713
+MYTREE_SCHEMA_VERSION='rev13-20260812'
+MYTREE_REQUIRED_TABLES=(
+ 'roles','permissions','role_permissions','user_permissions','wilayas','communes',
+ 'species','users','projects','zones','teams','events','event_participants','trees',
+ 'watering_logs','notifications','missions','interventions','equipment','members',
+ 'donations','nursery_stock','activity_log','settings','agents','agent_payments',
+ 'operational_tasks','tree_change_requests','tree_gps_history','watering_batches'
+)
+MYTREE_REQUIRED_COLUMNS=(
+ ('users','preferred_language'),('projects','updated_at'),('zones','updated_at'),
+ ('species','name_en'),('trees','gps_review_status'),('trees','stock_source'),
+ ('notifications','action_type'),('watering_logs','batch_id'),('missions','report'),
+ ('roles','description'),('teams','updated_at')
+)
+
+def _marker_ready(c):
+ try:
+  exists=c.execute("SELECT COUNT(*) n FROM information_schema.tables WHERE table_schema='public' AND table_name='mytree_runtime_meta'").fetchone()['n']
+  if not exists: return False
+  row=c.execute("SELECT value FROM mytree_runtime_meta WHERE key='schema_version'").fetchone()
+  return bool(row and row['value']==MYTREE_SCHEMA_VERSION)
+ except Exception:
+  return False
+
+def _legacy_schema_ready(c):
+ """Détecte une base Neon déjà entièrement initialisée par la Rev.12."""
+ try:
+  marks=','.join('?' for _ in MYTREE_REQUIRED_TABLES)
+  n=c.execute(f"SELECT COUNT(*) n FROM information_schema.tables WHERE table_schema='public' AND table_name IN ({marks})",MYTREE_REQUIRED_TABLES).fetchone()['n']
+  if n != len(MYTREE_REQUIRED_TABLES): return False
+  for table,column in MYTREE_REQUIRED_COLUMNS:
+   r=c.execute("SELECT COUNT(*) n FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND column_name=?",(table,column)).fetchone()
+   if not r or r['n']!=1: return False
+  return True
+ except Exception:
+  return False
+
+def _write_schema_marker(c):
+ c.execute("CREATE TABLE IF NOT EXISTS mytree_runtime_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT)")
+ c.execute("INSERT INTO mytree_runtime_meta(key,value,updated_at) VALUES(?,?,?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",('schema_version',MYTREE_SCHEMA_VERSION,datetime.now().isoformat(timespec='seconds')))
+
+def _postgres_fast_ready():
+ """Chemin de cold-start : quelques SELECT seulement, sans rejouer SCHEMA/seed."""
+ c=db()
+ try:
+  if _marker_ready(c):
+   c.rollback()  # ferme proprement la transaction de lecture psycopg
+   return True
+  if not _legacy_schema_ready(c):
+   c.rollback()
+   return False
+  # Base Rev.12 déjà prête : poser le marqueur sous un verrou transactionnel
+  # très court pour éviter une course entre deux cold starts.
+  c.rollback()
+  c.execute('SELECT pg_advisory_xact_lock(?)',(MYTREE_INIT_LOCK_KEY,))
+  if not _marker_ready(c): _write_schema_marker(c)
+  c.commit()
+  return True
+ except Exception:
+  try: c.rollback()
+  except Exception: pass
+  return False
+ finally:
+  c.close()
 
 def init_db():
+ if using_postgres() and _postgres_fast_ready():
+  return
  c=db()
- init_lock=False
  try:
   if using_postgres():
-   # Vercel peut démarrer plusieurs fonctions Flask en parallèle. Sans ce
-   # verrou, deux instances peuvent exécuter CREATE TABLE simultanément et
-   # PostgreSQL peut lever pg_type_typname_nsp_index / UniqueViolation.
-   c.execute('SELECT pg_advisory_lock(?)',(MYTREE_INIT_LOCK_KEY,))
-   c.commit()
-   init_lock=True
+   # Verrou transactionnel : libéré automatiquement au commit/rollback.
+   c.execute('SELECT pg_advisory_xact_lock(?)',(MYTREE_INIT_LOCK_KEY,))
+   # Une autre instance a pu terminer pendant notre attente.
+   if _marker_ready(c):
+    c.commit()
+    return
 
   c.executescript(SCHEMA)
   migrate_legacy(c)
@@ -197,25 +271,13 @@ def init_db():
   CREATE INDEX IF NOT EXISTS idx_events_start_status ON events(start_at,status,active);
   CREATE INDEX IF NOT EXISTS idx_tasks_start_status ON operational_tasks(start_at,status);
   """)
+  if using_postgres(): _write_schema_marker(c)
   c.commit()
  except Exception:
-  # Une erreur PostgreSQL laisse la transaction en état aborted : rollback
-  # avant toute tentative de libération du verrou.
-  try:
-   c.rollback()
-  except Exception:
-   pass
+  try: c.rollback()
+  except Exception: pass
   raise
  finally:
-  if init_lock:
-   try:
-    c.execute('SELECT pg_advisory_unlock(?)',(MYTREE_INIT_LOCK_KEY,))
-    c.commit()
-   except Exception:
-    try:
-     c.rollback()
-    except Exception:
-     pass
   c.close()
 
 SUPPORTED_LANGS=('fr','ar','en')
