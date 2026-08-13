@@ -1,2 +1,7 @@
-__pycache__/ 
-*.pyc 
+.venv/
+venv/
+__pycache__/
+*.pyc
+mytree.db
+*.db.before-restore-*
+.DS_Store
