@@ -2,7 +2,8 @@ from flask import Flask, request, redirect, session, flash, render_template_stri
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from datetime import datetime, date, timedelta
-import sqlite3, os, io, json, shutil, tempfile, urllib.request, secrets
+import sqlite3, os, io, json, shutil, tempfile, urllib.request, urllib.parse, secrets, smtplib
+from email.message import EmailMessage
 from data_catalogs import SPECIES_CATALOG, EQUIPMENT_CATALOG
 import qrcode
 
@@ -13,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v1.8.0 RC1 Rev.13 — Online Test / Cohérence multi-interface'
+APP_VERSION='v1.8.0 RC1 Rev.14 — Online Test / Correctif final'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -304,7 +305,7 @@ DEPENDENT_SELECTS_SCRIPT='''<script id="mytree-dependent-selects">(function(){
 async function fill(url,sel,selected,label){if(!sel)return;const cur=selected??sel.value;sel.innerHTML='<option value="">'+(label||'—')+'</option>';if(!url)return;try{const rows=await fetch(url).then(r=>r.ok?r.json():[]);rows.forEach(x=>{let o=new Option((x.name||'')+(x.name_ar?' — '+x.name_ar:''),x.id);if(String(x.id)===String(cur))o.selected=true;sel.add(o)})}catch(e){}}
 async function bindGeo(root){for(const w of root.querySelectorAll('select[name="wilaya_id"]')){if(w.dataset.depGeo)return;w.dataset.depGeo='1';const form=w.closest('form')||root,c=form.querySelector('select[name="commune_id"]');if(!c)continue;const initial=c.value;w.addEventListener('change',()=>fill(w.value?'/api/communes/'+w.value:null,c,null,'—'));if(w.value)await fill('/api/communes/'+w.value,c,initial,'—')}}
 async function bindProject(root){for(const p of root.querySelectorAll('select[name="project_id"]')){if(p.dataset.depProject)return;p.dataset.depProject='1';const form=p.closest('form')||root,z=form.querySelector('select[name="zone_id"]');if(!z)continue;const initial=z.value;p.addEventListener('change',()=>fill(p.value?'/api/projects/'+p.value+'/zones':null,z,null,'—'));if(p.value)await fill('/api/projects/'+p.value+'/zones',z,initial,'—')}}
-async function bindTeam(root){for(const t of root.querySelectorAll('select[name="team_id"]')){if(t.dataset.depTeam)return;t.dataset.depTeam='1';const form=t.closest('form')||root,l=form.querySelector('select[name="leader_user_id"],select[name="assigned_user_id"]');if(!l)continue;t.addEventListener('change',async()=>{if(!t.value)return;try{const d=await fetch('/api/teams/'+t.value+'/leader').then(r=>r.ok?r.json():{});if(d.id){l.value=String(d.id);l.dispatchEvent(new Event('change',{bubbles:true}))}}catch(e){}})}}
+async function bindTeam(root){for(const t of root.querySelectorAll('select[name="team_id"]')){if(t.dataset.depTeam)return;t.dataset.depTeam='1';const form=t.closest('form')||root,l=form.querySelector('select[name="leader_user_id"],select[name="assigned_user_id"]');if(!l)continue;t.addEventListener('change',async()=>{if(!t.value)return;try{const d=await fetch('/api/teams/'+t.value+'/leader').then(r=>r.ok?r.json():{});if(d.leader_user_id){l.value=String(d.leader_user_id);l.dispatchEvent(new Event('change',{bubbles:true}))}}catch(e){}})}}
 async function scan(root){await bindGeo(root);await bindProject(root);await bindTeam(root)}document.addEventListener('DOMContentLoaded',()=>scan(document));new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{if(n.nodeType===1)scan(n)}))).observe(document.documentElement,{childList:true,subtree:true});})();</script>'''
 
 def log_action(action,entity_type,entity_id=None,details=''):
@@ -392,7 +393,7 @@ STYLE='''<style>:root{--bg:#f3f6f1;--card:#fff;--text:#223129;--muted:#748079;--
 
 .don-line{display:grid;grid-template-columns:2fr 1fr auto;gap:8px;align-items:center;margin:9px 0}.action-set{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.action-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:10px;border:1px solid transparent;text-decoration:none;font-weight:700;cursor:pointer}.action-view{background:#eef5ff;color:#23558b}.action-map{background:#f1f0ff;color:#5848a5}.action-edit{background:#fff6df;color:#8a6113}.action-delete{background:#fff;color:#8b3434;border-color:#e4caca}.action-delete:hover{background:#fff6f6;border-color:#c98f8f}.action-primary{background:var(--green);color:#fff}.don-type-panel{display:none}.don-type-panel.active{display:contents}.mobile-only,.mobile-back{display:none}.private-section-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9fb5a7;padding:10px 13px 3px}.danger-zone{border:1px solid #efc4c4;background:#fff8f8}.crud-actions{display:flex;gap:7px;flex-wrap:wrap}.public-login-cta{display:inline-block}.public-auth-banner{display:none;gap:8px;justify-content:flex-end;padding-top:12px}.public-auth-banner .btn{display:inline-block}
 @media(max-width:700px){
- header{height:auto;min-height:66px;position:sticky;top:0;z-index:1150;padding:10px 12px;flex-direction:row;align-items:center;gap:8px}.mobile-title-row{display:flex;align-items:center;gap:9px;min-width:0}.mobile-title-row b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55vw}.mobile-back{display:inline-flex!important;width:42px;height:42px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:12px;background:#fff;font-size:24px;color:var(--deep)}.header-actions{margin-left:auto;width:auto;gap:10px}.header-actions>a:not(.notif-bell),.header-actions>b{display:none}.layout{display:block!important;padding-bottom:72px}.layout>aside.vol-nav{position:fixed!important;bottom:0;left:0;right:0;z-index:1200;height:66px;width:100%;display:grid!important;grid-template-columns:repeat(5,1fr)!important;background:#fff!important;border-top:1px solid var(--line);padding:4px!important;overflow:visible!important}.vol-nav .brand,.vol-nav .slogan,.vol-nav .desktop-only,.vol-nav .private-section-label{display:none!important}.vol-nav a{display:none!important}.vol-nav a.mobile-primary{display:flex!important;min-width:0!important;width:auto!important;margin:0!important;padding:5px 2px!important;border:0!important;border-radius:9px!important;background:transparent!important;color:var(--deep)!important;font-size:10px!important;line-height:1.15;text-align:center!important;align-items:center;justify-content:center;white-space:normal}.vol-nav a.mobile-primary:hover{background:#edf5ef!important}.layout>aside:not(.vol-nav){display:none!important}main{padding:12px 10px}.section-title{align-items:flex-start;gap:10px;flex-direction:column}.section-title>div,.section-title>.crud-actions{width:100%}.section-title .btn,.crud-actions .btn,.crud-actions form{width:100%}.crud-actions form .btn{width:100%}.toolbar{display:flex;flex-direction:column;align-items:stretch}.toolbar label,.toolbar .btn{width:100%;min-width:0}.form{grid-template-columns:1fr}.card{overflow-x:auto}.vertical-actions{width:100%}.vertical-action{min-height:64px;padding:13px 15px}.vertical-action .icon{font-size:28px}.secondary-action{background:#eef5f0}.desktop-dashboard-details{display:none}.mobile-only{display:block}.public-header .public-shell{flex-direction:column;align-items:stretch!important}.public-auth-banner{display:flex!important}.public-brand{text-align:center}.public-login-cta{display:block!important;width:100%;text-align:center}.mobile-public-nav{position:fixed!important;bottom:0!important;display:grid!important;grid-template-columns:repeat(5,1fr)!important;background:#fff!important;border-top:1px solid var(--line)!important;padding:4px!important;gap:0!important}.mobile-public-nav a{display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;background:transparent!important;border:0!important;border-radius:9px!important;padding:5px 2px!important;font-size:10px!important;font-weight:700!important;text-align:center!important}.mobile-public-nav a:nth-child(n+6){display:none!important}.mobile-public-nav span{display:block!important;font-size:21px!important}.public-page-body{padding-bottom:68px!important}.vol-actions,.public-actions,.field-actions{display:flex!important;flex-direction:column!important}.vol-action,.public-action,.field-action{width:100%;min-height:68px!important}table{min-width:680px}
+ header{height:auto;min-height:66px;position:sticky;top:0;z-index:1150;padding:10px 12px;flex-direction:row;align-items:center;gap:8px}.mobile-title-row{display:flex;align-items:center;gap:9px;min-width:0}.mobile-title-row b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55vw}.mobile-back{display:inline-flex!important;width:42px;height:42px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:12px;background:#fff;font-size:24px;color:var(--deep)}.header-actions{margin-left:auto;width:auto;gap:10px}.header-actions>a:not(.notif-bell):not(.account-home):not(.account-logout),.header-actions>b{display:none}.header-actions .account-home,.header-actions .account-logout{display:inline-flex!important;align-items:center;justify-content:center;font-size:12px;padding:7px 8px;white-space:nowrap}.header-actions{display:flex!important;align-items:center;gap:5px}.lang-switch{display:none!important}.layout{display:block!important;padding-bottom:72px}.layout>aside.vol-nav{position:fixed!important;bottom:0;left:0;right:0;z-index:1200;height:66px;width:100%;display:grid!important;grid-template-columns:repeat(5,1fr)!important;background:#fff!important;border-top:1px solid var(--line);padding:4px!important;overflow:visible!important}.vol-nav .brand,.vol-nav .slogan,.vol-nav .desktop-only,.vol-nav .private-section-label{display:none!important}.vol-nav a{display:none!important}.vol-nav a.mobile-primary{display:flex!important;min-width:0!important;width:auto!important;margin:0!important;padding:5px 2px!important;border:0!important;border-radius:9px!important;background:transparent!important;color:var(--deep)!important;font-size:10px!important;line-height:1.15;text-align:center!important;align-items:center;justify-content:center;white-space:normal}.vol-nav a.mobile-primary:hover{background:#edf5ef!important}.layout>aside:not(.vol-nav){display:none!important}main{padding:12px 10px}.section-title{align-items:flex-start;gap:10px;flex-direction:column}.section-title>div,.section-title>.crud-actions{width:100%}.section-title .btn,.crud-actions .btn,.crud-actions form{width:100%}.crud-actions form .btn{width:100%}.toolbar{display:flex;flex-direction:column;align-items:stretch}.toolbar label,.toolbar .btn{width:100%;min-width:0}.form{grid-template-columns:1fr}.card{overflow-x:auto}.vertical-actions{width:100%}.vertical-action{min-height:64px;padding:13px 15px}.vertical-action .icon{font-size:28px}.secondary-action{background:#eef5f0}.desktop-dashboard-details{display:none}.mobile-only{display:block}.public-header .public-shell{flex-direction:column;align-items:stretch!important}.public-auth-banner{display:flex!important}.public-brand{text-align:center}.public-login-cta{display:block!important;width:100%;text-align:center}.mobile-public-nav{position:fixed!important;bottom:0!important;display:grid!important;grid-template-columns:repeat(5,1fr)!important;background:#fff!important;border-top:1px solid var(--line)!important;padding:4px!important;gap:0!important}.mobile-public-nav a{display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;background:transparent!important;border:0!important;border-radius:9px!important;padding:5px 2px!important;font-size:10px!important;font-weight:700!important;text-align:center!important}.mobile-public-nav a:nth-child(n+6){display:none!important}.mobile-public-nav span{display:block!important;font-size:21px!important}.public-page-body{padding-bottom:68px!important}.vol-actions,.public-actions,.field-actions{display:flex!important;flex-direction:column!important}.vol-action,.public-action,.field-action{width:100%;min-height:68px!important}table{min-width:680px}
 }
 </style>'''
 PHOTO_SCRIPT='''<script>
@@ -505,7 +506,15 @@ def page(title,body,**ctx):
   nav=NAV_ADMIN if is_admin() else volunteer_nav()
   c=db(); unread=c.execute('SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0',(session['uid'],)).fetchone()['n']; c.close()
   bell=f'<a class="notif-bell" href="/notifications" title="Notifications">🔔<span>{unread}</span></a>' if unread else '<a class="notif-bell" href="/notifications" title="Notifications">🔔</a>'
-  home_path='/' if is_admin() else '/volunteer'; back_btn='' if request.path==home_path else '<button type="button" class="mobile-back" onclick="history.back()">←</button>'
+  home_path='/' if is_admin() else '/volunteer'; ref=request.referrer or ''; back_path=home_path
+  if ref:
+   try:
+    from urllib.parse import urlparse
+    rp=urlparse(ref); back_path=(rp.path + (('?'+rp.query) if rp.query else '')) if rp.path and rp.path!=request.path else home_path
+   except Exception: back_path=home_path
+  # Never send Retour back into action-entry forms after a completed/redirected operation.
+  if any(x in back_path for x in ['/planting/new','/volunteer/donate','/donations/new','/watering/new']): back_path=home_path
+  back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
   tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for m in get_flashed_messages() %}<div class="flash">{{m}}</div>{% endfor %}{{content|safe}}</main></div></body></html>'
   return render_template_string(tpl,content=content)
  return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main></body></html>',content=content)
@@ -539,32 +548,54 @@ def login():
 @app.route('/forgot-password',methods=['GET','POST'])
 def forgot_password():
  if request.method=='POST':
-  phone=clean(request.form.get('phone')); c=db(); u=c.execute('SELECT id FROM users WHERE phone=? AND active=1',(phone,)).fetchone()
+  identifier=clean(request.form.get('identifier')); method=clean(request.form.get('method')) or 'sms'; c=db()
+  u=c.execute('SELECT id,phone,email FROM users WHERE active=1 AND (phone=? OR lower(email)=lower(?))',(identifier,identifier)).fetchone()
   if u:
+   destination=clean(u['email'] if method=='email' else u['phone'])
+   if not destination:
+    flash('Ce mode de récupération n’est pas disponible pour ce compte.'); c.close(); return redirect('/forgot-password')
    code=f"{secrets.randbelow(1000000):06d}"; now=datetime.now(); exp=(now+timedelta(minutes=10)).isoformat(timespec='seconds')
-   c.execute('UPDATE password_reset_codes SET used=1 WHERE user_id=? AND used=0',(u['id'],)); c.execute('INSERT INTO password_reset_codes(user_id,phone,code_hash,expires_at,used,created_at) VALUES(?,?,?,?,0,?)',(u['id'],phone,generate_password_hash(code),exp,now.isoformat(timespec='seconds'))); c.commit()
-   webhook=os.environ.get('MYTREE_SMS_WEBHOOK','').strip()
-   if webhook:
-    try:
-     data=json.dumps({'phone':phone,'message':f'MyTree - code de réinitialisation : {code} (valable 10 minutes)'}).encode('utf-8'); req=urllib.request.Request(webhook,data=data,headers={'Content-Type':'application/json'},method='POST'); urllib.request.urlopen(req,timeout=10).read(); flash('Un code SMS a été envoyé.'); c.close(); return redirect('/reset-password?phone='+phone)
-    except Exception: flash('Le service SMS est temporairement indisponible. Réessayez plus tard.')
-   else: flash('Le fournisseur SMS n’est pas encore configuré sur le serveur. Contactez un administrateur.')
-  else: flash('Si ce numéro existe, les instructions de réinitialisation seront envoyées.')
+   c.execute('UPDATE password_reset_codes SET used=1 WHERE user_id=? AND used=0',(u['id'],)); c.execute('INSERT INTO password_reset_codes(user_id,phone,code_hash,expires_at,used,created_at) VALUES(?,?,?,?,0,?)',(u['id'],destination,generate_password_hash(code),exp,now.isoformat(timespec='seconds'))); c.commit()
+   sent=False
+   if method=='sms':
+    webhook=os.environ.get('MYTREE_SMS_WEBHOOK','').strip()
+    if webhook:
+     try:
+      data=json.dumps({'phone':destination,'message':f'MyTree - code de réinitialisation : {code} (valable 10 minutes)'}).encode('utf-8'); req=urllib.request.Request(webhook,data=data,headers={'Content-Type':'application/json'},method='POST'); urllib.request.urlopen(req,timeout=10).read(); sent=True
+     except Exception: pass
+    if sent: flash('Un code SMS a été envoyé.')
+    else: flash('Le fournisseur SMS n’est pas encore configuré ou est indisponible.')
+   else:
+    host=os.environ.get('MYTREE_SMTP_HOST','').strip(); user=os.environ.get('MYTREE_SMTP_USER','').strip(); password=os.environ.get('MYTREE_SMTP_PASSWORD',''); sender=os.environ.get('MYTREE_EMAIL_FROM',user).strip(); port=int(os.environ.get('MYTREE_SMTP_PORT','587'))
+    if host and sender:
+     try:
+      msg=EmailMessage(); msg['Subject']='MyTree - Réinitialisation du mot de passe'; msg['From']=sender; msg['To']=destination; msg.set_content(f'Votre code MyTree est : {code}\nCe code est valable 10 minutes.')
+      with smtplib.SMTP(host,port,timeout=10) as smtp:
+       smtp.starttls()
+       if user: smtp.login(user,password)
+       smtp.send_message(msg)
+      sent=True
+     except Exception: pass
+    if sent: flash('Un code a été envoyé par e-mail.')
+    else: flash('Le service e-mail n’est pas encore configuré ou est indisponible.')
+   c.close()
+   if sent: return redirect('/reset-password?destination='+urllib.parse.quote(destination))
+  else: flash('Si ce compte existe, les instructions de réinitialisation seront envoyées.')
   c.close()
- return page('Mot de passe oublié',"""<div class='card login-card'><h2>Mot de passe oublié ?</h2><p class='sub'>Saisissez le numéro de téléphone associé à votre compte.</p><form method='post'><label>Téléphone<input name='phone' inputmode='tel' required></label><div class='login-actions'><button class='btn'>Envoyer le code SMS</button><a class='btn alt' href='/login'>Retour</a></div></form></div>""")
+ return page('Mot de passe oublié',"""<div class='card login-card'><h2>Mot de passe oublié ?</h2><p class='sub'>Saisissez votre téléphone ou e-mail, puis choisissez comment recevoir le code.</p><form method='post'><label>Téléphone ou e-mail<input name='identifier' required></label><label style='display:block;margin-top:14px'>Recevoir le code par<select name='method'><option value='sms'>SMS</option><option value='email'>E-mail</option></select></label><div class='login-actions'><button class='btn'>Envoyer le code</button><a class='btn alt' href='/login'>Retour</a></div></form></div>""")
 
 @app.route('/reset-password',methods=['GET','POST'])
 def reset_password():
- phone=clean(request.values.get('phone'))
+ destination=clean(request.values.get('destination') or request.values.get('phone'))
  if request.method=='POST':
-  code=clean(request.form.get('code')); password=request.form.get('password',''); confirm=request.form.get('password_confirm',''); c=db(); u=c.execute('SELECT id FROM users WHERE phone=? AND active=1',(phone,)).fetchone(); row=c.execute("SELECT * FROM password_reset_codes WHERE phone=? AND used=0 ORDER BY id DESC LIMIT 1",(phone,)).fetchone()
-  if not u or not row or row['expires_at']<datetime.now().isoformat(timespec='seconds') or not check_password_hash(row['code_hash'],code): flash('Code SMS invalide ou expiré.')
+  code=clean(request.form.get('code')); password=request.form.get('password',''); confirm=request.form.get('password_confirm',''); c=db(); row=c.execute("SELECT * FROM password_reset_codes WHERE phone=? AND used=0 ORDER BY id DESC LIMIT 1",(destination,)).fetchone(); u=c.execute('SELECT id FROM users WHERE id=? AND active=1',(row['user_id'],)).fetchone() if row else None
+  if not u or not row or row['expires_at']<datetime.now().isoformat(timespec='seconds') or not check_password_hash(row['code_hash'],code): flash('Code invalide ou expiré.')
   elif len(password)<6: flash('Le mot de passe doit contenir au moins 6 caractères.')
   elif password!=confirm: flash('Les mots de passe ne correspondent pas.')
   else:
    c.execute('UPDATE users SET password_hash=? WHERE id=?',(generate_password_hash(password),u['id'])); c.execute('UPDATE password_reset_codes SET used=1 WHERE id=?',(row['id'],)); c.commit(); c.close(); flash('Mot de passe réinitialisé.'); return redirect('/login')
   c.close()
- return page('Nouveau mot de passe',"""<div class='card login-card'><form method='post'><input type='hidden' name='phone' value='{{phone}}'><label>Code SMS<input name='code' inputmode='numeric' maxlength='6' required></label><label>Nouveau mot de passe<input type='password' name='password' minlength='6' required></label><label>Confirmer le mot de passe<input type='password' name='password_confirm' minlength='6' required></label><div class='login-actions'><button class='btn'>Enregistrer</button><a class='btn alt' href='/login'>Annuler</a></div></form></div>""",phone=phone)
+ return page('Nouveau mot de passe',"""<div class='card login-card'><form method='post'><input type='hidden' name='destination' value='{{destination}}'><label>Code reçu<input name='code' inputmode='numeric' maxlength='6' required></label><label>Nouveau mot de passe<input type='password' name='password' minlength='6' required></label><label>Confirmer le mot de passe<input type='password' name='password_confirm' minlength='6' required></label><div class='login-actions'><button class='btn'>Enregistrer</button><a class='btn alt' href='/login'>Annuler</a></div></form></div>""",destination=destination)
 
 @app.route('/public/events')
 def public_events():
@@ -621,7 +652,7 @@ def register():
 
 @app.route('/logout')
 def logout():
- target=request.args.get('next') or '/login'; session.clear(); return redirect(target if target.startswith('/') else '/login')
+ target=request.args.get('next') or '/public'; session.clear(); return redirect(target if target.startswith('/') else '/public')
 
 @app.route('/')
 def dashboard():
