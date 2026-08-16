@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 3 — Carte publique, filtres universels & collaboration Online Test'
+APP_VERSION='v2.0 Alpha 4 — Multi-Associations Consolidation & Online Test'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -2919,6 +2919,12 @@ def context_is_association_admin():
  ctx=active_context()
  return ctx['type']=='association' and (is_super_admin() or ctx.get('role_code') in ('association_admin','admin'))
 
+def can_administer_association(c, association_id, user_id=None):
+ user_id=user_id or session.get('uid')
+ if not user_id or not association_id: return False
+ if is_super_admin(): return True
+ return bool(c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(association_id,user_id)).fetchone())
+
 def context_switcher():
  if not session.get('uid'): return ''
  c=db(); ctx=active_context(c); assocs=approved_associations(c,session['uid']); c.close()
@@ -2972,20 +2978,49 @@ def switch_context():
  else: flash('Ce contexte n’est pas autorisé.')
  c.close(); return redirect(request.referrer or ('/' if is_admin() else '/volunteer'))
 
+def tenant_resource_for_request():
+ # Alpha 4: resolve tenant ownership from the URL rule, not from generic
+ # parameter names. Alpha 3 reused tid/mid/pid across unrelated modules.
+ rule=(request.url_rule.rule if request.url_rule else request.path).lower()
+ mapping=(
+  ('/projects/<', 'pid','projects'),
+  ('/api/projects/<', 'pid','projects'),
+  ('/zones/<', 'zid','zones'),
+  ('/teams/<', 'tid','teams'),
+  ('/api/teams/<', 'tid','teams'),
+  ('/trees/<', 'tid','trees'),
+  ('/tree/<', 'tid','trees'),
+  ('/plantings/<', 'tid','trees'),
+  ('/planting/<', 'tid','trees'),
+  ('/qr/<', 'tid','trees'),
+  ('/volunteer/gps-quick/<', 'tid','trees'),
+  ('/missions/<', 'mid','missions'),
+  ('/members/<', 'mid','members'),
+  ('/events/<', 'eid','events'),
+  ('/equipment/<', 'eid','equipment'),
+  ('/donations/<', 'did','donations'),
+  ('/agent-payments/<', 'pid','agent_payments'),
+ )
+ for prefix,arg,table in mapping:
+  if rule.startswith(prefix): return arg,table
+ return None,None
+
+def tenant_access_allowed(ctx, association_id):
+ if ctx['type']=='global' and is_super_admin(): return True
+ if ctx['type']=='association': return association_id==ctx['association_id']
+ return association_id is None
+
 @app.before_request
-def tenant_guard_alpha2():
+def tenant_guard_alpha4():
  if not session.get('uid') or request.endpoint in ('switch_context','login','logout','public_home','public_associations','healthz','static'): return None
  ctx=active_context()
  if ctx['type']=='global' and is_super_admin(): return None
- # Protection directe des fiches multi-associations par identifiant URL.
- mapping=[('pid','projects'),('zid','zones'),('tid','teams'),('mid','missions'),('eid','events'),('did','donations')]
- for arg,table in mapping:
-  if request.view_args and arg in request.view_args:
-   ident=request.view_args[arg]; c=db(); has_assoc='association_id' in columns(c,table); r=c.execute(f'SELECT association_id FROM {table} WHERE id=?',(ident,)).fetchone() if has_assoc else None; c.close()
-   if r:
-    aid=r['association_id']
-    if ctx['type']=='association' and aid!=ctx['association_id']: return ('Accès association non autorisé',403)
-    if ctx['type']=='personal' and aid is not None: return ('Accès association non autorisé',403)
+ arg,table=tenant_resource_for_request()
+ if not arg or not request.view_args or arg not in request.view_args: return None
+ ident=request.view_args[arg]; c=db(); has_assoc='association_id' in columns(c,table)
+ r=c.execute(f'SELECT association_id FROM {table} WHERE id=?',(ident,)).fetchone() if has_assoc else None; c.close()
+ if r and not tenant_access_allowed(ctx,r['association_id']):
+  return ('Accès association non autorisé',403)
  return None
 
 @app.route('/public/associations')
@@ -3116,14 +3151,43 @@ def api_associations():
 def project_collaboration(pid):
  c=db(); p=c.execute('SELECT * FROM projects WHERE id=? AND active=1',(pid,)).fetchone()
  if not p: c.close(); return ('Projet introuvable',404)
- inviter=p['association_id'] or current_association_id()
+ inviter=p['association_id']
+ if not inviter:
+  c.close(); flash('La collaboration inter-associations est réservée aux projets d’association.'); return redirect('/projects/'+str(pid))
+ if not can_administer_association(c,inviter):
+  c.close(); return ('Administration de l’association requise',403)
  if request.method=='POST':
   invited=int(request.form.get('association_id') or 0)
-  if inviter and invited and inviter!=invited:
-   c.execute("INSERT OR IGNORE INTO association_collaborations(project_id,inviting_association_id,invited_association_id,status,created_by_user_id,created_at) VALUES(?,?,?,'pending',?,?)",(pid,inviter,invited,session['uid'],datetime.now().isoformat(timespec='minutes'))); c.commit(); flash('Invitation de collaboration envoyée.')
- rows=c.execute('SELECT ac.*,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.project_id=? ORDER BY ac.id DESC',(pid,)).fetchall(); assocs=c.execute("SELECT id,name,map_symbol FROM associations WHERE status='active' AND id<>COALESCE(?,0) ORDER BY name",(inviter,)).fetchall(); c.close()
- content="""<div class='card'><h2>🤝 Collaboration — {{p.name}}</h2><form method='post'><label>Inviter une association<select name='association_id' required><option value=''>Choisir</option>{% for a in assocs %}<option value='{{a.id}}'>{{a.map_symbol}} {{a.name}}</option>{% endfor %}</select></label><button class='btn'>Envoyer l’invitation</button></form></div><div class='card'><table><tr><th>Invitante</th><th>Invitée</th><th>Statut</th></tr>{% for x in rows %}<tr><td>{{x.inviter_name}}</td><td>{{x.invited_name}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan='3'>Aucune collaboration.</td></tr>{% endfor %}</table></div>"""
+  target=c.execute("SELECT id,name FROM associations WHERE id=? AND status='active'",(invited,)).fetchone() if invited else None
+  if not target or invited==inviter:
+   c.close(); flash('Association invitée invalide.'); return redirect('/projects/'+str(pid)+'/collaboration')
+  now=datetime.now().isoformat(timespec='minutes')
+  existing=c.execute("SELECT id,status FROM association_collaborations WHERE project_id=? AND inviting_association_id=? AND invited_association_id=?",(pid,inviter,invited)).fetchone()
+  if existing and existing['status'] in ('pending','accepted'):
+   flash('Une invitation ou collaboration existe déjà avec cette association.')
+  else:
+   if existing:
+    c.execute("UPDATE association_collaborations SET status='pending',created_by_user_id=?,created_at=?,reviewed_by_user_id=NULL,reviewed_at=NULL WHERE id=?",(session['uid'],now,existing['id']))
+   else:
+    c.execute("INSERT INTO association_collaborations(project_id,inviting_association_id,invited_association_id,status,created_by_user_id,created_at) VALUES(?,?,?,'pending',?,?)",(pid,inviter,invited,session['uid'],now))
+   admins=c.execute("SELECT DISTINCT user_id FROM association_memberships WHERE association_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(invited,)).fetchall()
+   for admin in admins:
+    c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(admin['user_id'],'Invitation de collaboration','Une association vous invite à collaborer sur le projet '+p['name']+'.','/collaborations','Information',now))
+   c.commit(); flash('Invitation de collaboration envoyée.')
+ rows=c.execute('SELECT ac.*,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.project_id=? ORDER BY ac.id DESC',(pid,)).fetchall(); assocs=c.execute("SELECT id,name,map_symbol FROM associations WHERE status='active' AND id<>? ORDER BY name",(inviter,)).fetchall(); c.close()
+ content="""<div class='card'><h2>🤝 Collaboration — {{p.name}}</h2><p class='sub'>Seuls les administrateurs de l’association propriétaire peuvent inviter une autre association.</p><form method='post'><label>Inviter une association<select name='association_id' required><option value=''>Choisir</option>{% for a in assocs %}<option value='{{a.id}}'>{{a.map_symbol}} {{a.name}}</option>{% endfor %}</select></label><button class='btn'>Envoyer l’invitation</button> <a class='btn alt' href='/collaborations'>Centre de collaboration</a></form></div><div class='card'><table><tr><th>Invitante</th><th>Invitée</th><th>Statut</th></tr>{% for x in rows %}<tr><td>{{x.inviter_name}}</td><td>{{x.invited_name}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan='3'>Aucune collaboration.</td></tr>{% endfor %}</table></div>"""
  return page('Collaboration associations',content,p=p,assocs=assocs,rows=rows)
+
+@app.route('/collaborations')
+@login_required
+def collaborations_center():
+ ctx=active_context()
+ if ctx['type']!='association' or not ctx['association_id']:
+  flash('Sélectionnez une association pour consulter ses collaborations.'); return redirect('/my-associations')
+ c=db(); aid=ctx['association_id']
+ rows=c.execute("SELECT ac.*,p.name project_name,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN projects p ON p.id=ac.project_id JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.inviting_association_id=? OR ac.invited_association_id=? ORDER BY CASE ac.status WHEN 'pending' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END,ac.id DESC",(aid,aid)).fetchall(); admin=can_administer_association(c,aid); c.close()
+ content="""<div class='section-title'><div><h2>🤝 Centre de collaboration</h2><p class='sub'>Invitations et projets partagés de l’association active.</p></div></div><div class='card'><table><tr><th>Projet</th><th>Association invitante</th><th>Association invitée</th><th>Statut</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.project_name}}</td><td>{{x.inviter_name}}</td><td>{{x.invited_name}}</td><td>{{x.status}}</td><td>{% if admin and x.invited_association_id==aid and x.status=='pending' %}<div class='action-set'><form method='post' action='/collaborations/{{x.id}}/accept'><button class='btn'>Accepter</button></form><form method='post' action='/collaborations/{{x.id}}/reject'><button class='btn alt'>Refuser</button></form></div>{% elif x.status=='accepted' %}<span class='badge ok'>Active</span>{% else %}—{% endif %}</td></tr>{% else %}<tr><td colspan='5'>Aucune collaboration pour cette association.</td></tr>{% endfor %}</table></div>"""
+ return page('Collaborations',content,rows=rows,aid=aid,admin=admin)
 
 @app.post('/collaborations/<int:cid>/<decision>')
 @login_required
@@ -3133,7 +3197,7 @@ def collaboration_decision(cid,decision):
  if not x: c.close(); return ('Invitation introuvable',404)
  allowed=is_super_admin() or c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(x['invited_association_id'],session['uid'])).fetchone()
  if not allowed: c.close(); return ('Accès refusé',403)
- c.execute('UPDATE association_collaborations SET status=?,reviewed_by_user_id=?,reviewed_at=? WHERE id=?',('accepted' if decision=='accept' else 'rejected',session['uid'],datetime.now().isoformat(timespec='minutes'),cid)); c.commit(); c.close(); flash('Invitation de collaboration mise à jour.'); return redirect(request.referrer or '/')
+ c.execute('UPDATE association_collaborations SET status=?,reviewed_by_user_id=?,reviewed_at=? WHERE id=?',('accepted' if decision=='accept' else 'rejected',session['uid'],datetime.now().isoformat(timespec='minutes'),cid)); c.commit(); c.close(); flash('Invitation de collaboration mise à jour.'); return redirect('/collaborations')
 
 @app.errorhandler(404)
 def not_found(error):
