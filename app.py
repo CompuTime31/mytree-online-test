@@ -14,13 +14,14 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Multi-Associations Consolidation & Online Test'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS permissions(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT UNIQUE NOT NULL,label TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS role_permissions(role_id INTEGER,permission_id INTEGER,PRIMARY KEY(role_id,permission_id));
 CREATE TABLE IF NOT EXISTS user_permissions(user_id INTEGER,permission_id INTEGER,granted INTEGER DEFAULT 1,PRIMARY KEY(user_id,permission_id));
+CREATE TABLE IF NOT EXISTS association_audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,association_id INTEGER,permission_code TEXT,action TEXT,resource_type TEXT,resource_id INTEGER,result TEXT NOT NULL,details TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS wilayas(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT UNIQUE,name TEXT UNIQUE NOT NULL,name_ar TEXT,active INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS communes(id INTEGER PRIMARY KEY AUTOINCREMENT,wilaya_id INTEGER NOT NULL,name TEXT NOT NULL,name_ar TEXT,active INTEGER DEFAULT 1,UNIQUE(wilaya_id,name));
 CREATE TABLE IF NOT EXISTS species(id INTEGER PRIMARY KEY AUTOINCREMENT,name_fr TEXT UNIQUE NOT NULL,name_ar TEXT,name_en TEXT,scientific_name TEXT,category TEXT,water_need TEXT,watering_frequency_days INTEGER,color TEXT DEFAULT '#2e7b47',description TEXT,photo_url TEXT,active INTEGER DEFAULT 1,created_at TEXT,updated_at TEXT);
@@ -49,7 +50,8 @@ CREATE TABLE IF NOT EXISTS project_phases(id INTEGER PRIMARY KEY AUTOINCREMENT,p
 CREATE TABLE IF NOT EXISTS operational_tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,task_type TEXT NOT NULL,status TEXT DEFAULT 'Planifiée',priority TEXT DEFAULT 'Normale',project_id INTEGER,zone_id INTEGER,team_id INTEGER,assigned_user_id INTEGER,start_at TEXT NOT NULL,end_at TEXT,description TEXT,completed_at TEXT,created_by_user_id INTEGER,created_at TEXT NOT NULL,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS volunteer_time_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,project_id INTEGER,task_id INTEGER,work_date TEXT NOT NULL,hours REAL NOT NULL,activity TEXT,notes TEXT,validated INTEGER DEFAULT 0,validated_by_user_id INTEGER,created_at TEXT NOT NULL);
 
-CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,title TEXT NOT NULL,message TEXT,link TEXT,category TEXT DEFAULT 'Général',action_type TEXT,action_id INTEGER,decision TEXT,is_read INTEGER DEFAULT 0,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,title TEXT NOT NULL,message TEXT,link TEXT,category TEXT DEFAULT 'Général',action_type TEXT,action_id INTEGER,decision TEXT,is_read INTEGER DEFAULT 0,read_at TEXT,processed_at TEXT,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS submission_tokens(token TEXT PRIMARY KEY,user_id INTEGER,route TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,sender_user_id INTEGER NOT NULL,recipient_user_id INTEGER,team_id INTEGER,project_id INTEGER,zone_id INTEGER,subject TEXT,body TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS login_history(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,login_value TEXT,success INTEGER DEFAULT 0,ip_address TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS password_reset_codes(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,phone TEXT NOT NULL,code_hash TEXT NOT NULL,expires_at TEXT NOT NULL,used INTEGER DEFAULT 0,created_at TEXT NOT NULL);
@@ -79,14 +81,47 @@ CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY AUTOINCREMENT,g
 CREATE TABLE IF NOT EXISTS associations(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT UNIQUE NOT NULL,name TEXT NOT NULL,short_name TEXT,description TEXT,logo_url TEXT,wilaya_id INTEGER,commune_id INTEGER,address TEXT,latitude REAL,longitude REAL,phone TEXT,email TEXT,website TEXT,map_symbol TEXT DEFAULT '🌳',status TEXT DEFAULT 'active',created_by_user_id INTEGER,created_at TEXT NOT NULL,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS association_memberships(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,user_id INTEGER NOT NULL,member_kind TEXT DEFAULT 'volunteer',role_code TEXT DEFAULT 'volunteer',status TEXT DEFAULT 'pending',requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT,UNIQUE(association_id,user_id,member_kind));
 CREATE TABLE IF NOT EXISTS association_creation_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,requested_by_user_id INTEGER,name TEXT NOT NULL,description TEXT,wilaya_id INTEGER,commune_id INTEGER,address TEXT,phone TEXT,email TEXT,status TEXT DEFAULT 'pending',requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT);
-CREATE TABLE IF NOT EXISTS association_collaborations(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id INTEGER NOT NULL,inviting_association_id INTEGER NOT NULL,invited_association_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_by_user_id INTEGER,created_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,UNIQUE(project_id,inviting_association_id,invited_association_id));
+CREATE TABLE IF NOT EXISTS association_collaborations(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id INTEGER NOT NULL,inviting_association_id INTEGER NOT NULL,invited_association_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',can_view INTEGER DEFAULT 1,can_intervene INTEGER DEFAULT 1,can_add_tree INTEGER DEFAULT 0,can_manage_missions INTEGER DEFAULT 0,created_by_user_id INTEGER,created_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,ended_by_user_id INTEGER,ended_at TEXT,end_reason TEXT,UNIQUE(project_id,inviting_association_id,invited_association_id));
+CREATE TABLE IF NOT EXISTS association_collaboration_history(id INTEGER PRIMARY KEY AUTOINCREMENT,collaboration_id INTEGER NOT NULL,action TEXT NOT NULL,actor_user_id INTEGER,association_id INTEGER,details TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS association_roles(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,code TEXT NOT NULL,label TEXT NOT NULL,level INTEGER DEFAULT 10,active INTEGER DEFAULT 1,UNIQUE(association_id,code));
 CREATE TABLE IF NOT EXISTS user_contexts(user_id INTEGER PRIMARY KEY,context_type TEXT DEFAULT 'personal',association_id INTEGER,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 '''
 
 def db():
- c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
+ # Lot 12 — SQLite durci pour les essais multi-utilisateurs en ligne.
+ c=sqlite3.connect(DB_PATH,timeout=15)
+ c.row_factory=sqlite3.Row
+ c.execute('PRAGMA foreign_keys=ON')
+ c.execute('PRAGMA busy_timeout=15000')
+ return c
+
+LOT12_BACKUP_TAG='alpha4-lot12-pre-migration'
+def backup_before_lot12_migration():
+ """Sauvegarde non destructive, une seule fois, avant migration du candidat Online Test."""
+ if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH)==0: return None
+ marker=os.path.join(DATA_DIR,'.'+LOT12_BACKUP_TAG)
+ if os.path.exists(marker): return None
+ stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
+ backup=os.path.join(DATA_DIR,f'mytree-pre-alpha4-lot12-{stamp}.db')
+ src=sqlite3.connect(DB_PATH,timeout=15); dst=sqlite3.connect(backup)
+ try: src.backup(dst)
+ finally: dst.close(); src.close()
+ with open(marker,'w',encoding='utf-8') as f: f.write(os.path.basename(backup))
+ return backup
+
+def database_diagnostics(c=None):
+ own=c is None; c=c or db()
+ try:
+  integrity=c.execute('PRAGMA quick_check').fetchone()[0]
+  names={r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+  required={'users','projects','zones','trees','associations','association_memberships','association_collaborations','notifications','submission_tokens'}
+  missing=sorted(required-names)
+  fk=c.execute('PRAGMA foreign_key_check').fetchall()
+  return {'integrity':integrity,'missing_tables':missing,'foreign_key_errors':len(fk),'tables':len(names)}
+ finally:
+  if own: c.close()
+
 
 def columns(c,table): return {r['name'] for r in c.execute(f'PRAGMA table_info({table})')}
 def add_column(c,table,definition):
@@ -109,19 +144,24 @@ def migrate_legacy(c):
  for d in ['species_id INTEGER','wilaya_id INTEGER','commune_id INTEGER','sector_id INTEGER','planted_by_user_id INTEGER','gps_accuracy REAL',"approval_status TEXT DEFAULT 'approved'",'approved_by_user_id INTEGER','approved_at TEXT','rejection_reason TEXT',"planting_type TEXT DEFAULT 'simple'",'created_at TEXT',"gps_review_status TEXT DEFAULT 'ok'",'gps_updated_at TEXT',"stock_source TEXT DEFAULT 'personal'",'stock_deducted INTEGER DEFAULT 0']:
   add_column(c,'trees',d)
  add_column(c,'notifications',"category TEXT DEFAULT 'Général'")
- for d in ['action_type TEXT','action_id INTEGER','decision TEXT']:
+ for d in ['action_type TEXT','action_id INTEGER','decision TEXT','read_at TEXT','processed_at TEXT']:
   add_column(c,'notifications',d)
  add_column(c,'members','membership_date TEXT')
  for table in ['projects','zones','teams','missions','events','trees','members','donations','cash_movements','agents','agent_payments','purchase_records','purchase_groups','operational_tasks','nursery_stock','nursery_movements','equipment','memberships','watering_batches','assignments']:
   if table in {r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
    add_column(c,table,'association_id INTEGER')
  add_column(c,'trees',"visibility TEXT DEFAULT 'public'")
+ for d in ['can_view INTEGER DEFAULT 1','can_intervene INTEGER DEFAULT 1','can_add_tree INTEGER DEFAULT 0','can_manage_missions INTEGER DEFAULT 0','ended_by_user_id INTEGER','ended_at TEXT','end_reason TEXT']:
+  add_column(c,'association_collaborations',d)
  for d in ['species_id INTEGER','equipment_id INTEGER']:
   add_column(c,'donations',d)
  for d in ['user_id INTEGER','quantity_range TEXT','latitude REAL','longitude REAL','photo_url TEXT','tree_condition TEXT','batch_id INTEGER','created_at TEXT']:
   add_column(c,'watering_logs',d)
  for d in ['created_by_user_id INTEGER','created_at TEXT','updated_at TEXT','code TEXT']:
   add_column(c,'teams',d)
+ add_column(c,'events','code TEXT')
+ try: c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_code_unique ON events(code) WHERE code IS NOT NULL AND code<>''")
+ except Exception: pass
  add_column(c,'wilayas','name_ar TEXT')
  add_column(c,'communes','name_ar TEXT')
  if 'tree_observations' in {r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}: add_column(c,'tree_observations','photo_url TEXT')
@@ -172,6 +212,49 @@ def validate_zone_target(c,project_id,target_trees,exclude_zone_id=None):
  if mx and target>remaining:return False,remaining
  return True,max(0,remaining-target)
 
+def validate_project_target(c,project_id,target_trees):
+ try: target=int(target_trees or 0)
+ except Exception:return False,0,0
+ allocated=c.execute('SELECT COALESCE(SUM(target_trees),0) n FROM zones WHERE project_id=? AND active=1',(project_id,)).fetchone()['n'] or 0
+ planted=c.execute("SELECT COUNT(*) n FROM trees WHERE project_id=? AND active=1 AND COALESCE(approval_status,'approved')<>'rejected'",(project_id,)).fetchone()['n'] or 0
+ # target=0 keeps the historic MyTree meaning: objective not defined / unlimited.
+ if target>0 and target<max(allocated,planted): return False,allocated,planted
+ return True,allocated,planted
+
+def project_owner_allowed(c,project_id,permission='project.update'):
+ p=c.execute('SELECT id,association_id,active FROM projects WHERE id=?',(project_id,)).fetchone()
+ if not p or not p['active']: return False,p
+ if is_super_admin(): return True,p
+ ctx=active_context(c); aid=ctx.get('association_id')
+ if ctx.get('type')!='association' or not aid or int(p['association_id'] or 0)!=int(aid): return False,p
+ return has_association_permission(permission,aid,resource_type='project',resource_id=project_id),p
+
+def resolve_project_geo(c,project_id):
+ return c.execute('SELECT id,association_id,wilaya_id,commune_id,target_trees FROM projects WHERE id=? AND active=1',(project_id,)).fetchone()
+
+def validate_tree_assignment(c,project_id=None,zone_id=None,exclude_tree_id=None):
+ if not project_id and zone_id: return False,'Une zone doit appartenir à un projet.',None,None
+ p=resolve_project_geo(c,project_id) if project_id else None
+ if project_id and not p: return False,'Le projet sélectionné est invalide ou archivé.',None,None
+ z=None
+ if zone_id:
+  z=c.execute('SELECT id,project_id,wilaya_id,commune_id,target_trees,active FROM zones WHERE id=?',(zone_id,)).fetchone()
+  if not z or not z['active']: return False,'La zone sélectionnée est invalide ou archivée.',p,None
+  if int(z['project_id'] or 0)!=int(project_id or 0): return False,'La zone ne correspond pas au projet sélectionné.',p,z
+  # Alpha 4 Lot 7: zone geography is inherited from its project.
+  if int(z['wilaya_id'] or 0)!=int(p['wilaya_id'] or 0) or int(z['commune_id'] or 0)!=int(p['commune_id'] or 0):
+   return False,'La géographie de la zone est incohérente avec celle du projet.',p,z
+ def count(where,args):
+  q="SELECT COUNT(*) n FROM trees WHERE active=1 AND COALESCE(approval_status,'approved')<>'rejected' AND "+where
+  a=list(args)
+  if exclude_tree_id: q+=' AND id<>?';a.append(exclude_tree_id)
+  return c.execute(q,a).fetchone()['n'] or 0
+ if p and (p['target_trees'] or 0)>0 and count('project_id=?',[project_id])>=int(p['target_trees']):
+  return False,'Objectif du projet atteint : aucune plantation supplémentaire ne peut être affectée à ce projet.',p,z
+ if z and (z['target_trees'] or 0)>0 and count('zone_id=?',[zone_id])>=int(z['target_trees']):
+  return False,'Objectif de la zone atteint : aucune plantation supplémentaire ne peut être affectée à cette zone.',p,z
+ return True,None,p,z
+
 def location_picker_markup(prefix):
  safe=''.join(ch for ch in str(prefix) if ch.isalnum() or ch=='_') or 'loc'
  return f'''<div class="full location-tools"><button type="button" class="btn alt" onclick="gps_{safe}()">📡 Ma position GPS</button> <button type="button" class="btn" onclick="map_{safe}()">🗺 Choisir sur la carte</button><span id="{safe}Msg" class="sub"></span></div><div class="full" id="{safe}Wrap" style="display:none"><div id="{safe}Map" class="map-picker"></div></div><script>(function(){{let m,k;window.gps_{safe}=function(){{let z=document.getElementById("{safe}Msg");if(!navigator.geolocation){{z.textContent="GPS indisponible";return}}navigator.geolocation.getCurrentPosition(p=>{{document.querySelector("[name=latitude]").value=p.coords.latitude.toFixed(7);document.querySelector("[name=longitude]").value=p.coords.longitude.toFixed(7);z.textContent="Position GPS enregistrée"}},()=>z.textContent="GPS indisponible",{{enableHighAccuracy:true,timeout:15000}})}};window.map_{safe}=function(){{let w=document.getElementById("{safe}Wrap");w.style.display="block";let a=parseFloat(document.querySelector("[name=latitude]").value)||35.70,b=parseFloat(document.querySelector("[name=longitude]").value)||-0.64;if(!m){{m=L.map("{safe}Map").setView([a,b],13);L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png",{{maxZoom:20}}).addTo(m);k=L.marker([a,b],{{draggable:true}}).addTo(m);function set(q){{document.querySelector("[name=latitude]").value=q.lat.toFixed(7);document.querySelector("[name=longitude]").value=q.lng.toFixed(7)}}k.on("dragend",e=>set(e.target.getLatLng()));m.on("click",e=>{{k.setLatLng(e.latlng);set(e.latlng)}})}}setTimeout(()=>m.invalidateSize(),100)}}}})();</script>'''
@@ -179,7 +262,7 @@ def location_picker_markup(prefix):
 def seed(c):
  roles=[('super_admin','Super administrateur',100),('admin','Administrateur',80),('coordinator','Coordinateur',60),('project_manager','Responsable de projet',50),('zone_manager','Responsable de zone',40),('team_leader','Chef d’équipe',30),('volunteer','Bénévole',10),('visitor','Visiteur',1)]
  for x in roles:c.execute('INSERT OR IGNORE INTO roles(name,label,level) VALUES(?,?,?)',x)
- perms=[('dashboard.view','Voir le tableau de bord'),('tree.view','Voir les arbres'),('tree.create','Créer une plantation'),('tree.approve','Valider une plantation'),('tree.edit','Modifier un arbre'),('tree.delete','Supprimer un arbre'),('watering.view','Voir les arrosages'),('watering.create','Enregistrer un arrosage'),('mission.view','Voir les missions'),('event.view','Voir les événements'),('event.register','S’inscrire aux événements'),('event.manage','Gérer les événements'),('intervention.view','Voir les interventions'),('intervention.create','Créer une intervention'),('intervention.manage','Gérer et planifier les interventions'),('team.view','Voir son équipe'),('map.view','Voir la carte'),('notification.view','Voir les notifications'),('volunteer.manage','Gérer les bénévoles'),('project.manage','Gérer les projets'),('zone.manage','Gérer les zones'),('geo.manage','Gérer la géographie'),('species.manage','Gérer les espèces'),('role.manage','Gérer les rôles et droits'),('user.manage','Gérer les utilisateurs'),('donation.view','Voir les dons'),('donation.manage','Gérer les dons'),('nursery.view','Voir la pépinière'),('nursery.manage','Gérer la pépinière'),('equipment.view','Voir le matériel'),('equipment.manage','Gérer le matériel'),('member.view','Voir les adhérents'),('member.manage','Gérer les adhérents'),('cash.view','Voir la caisse'),('cash.manage','Gérer la caisse'),('print.manage','Imprimer les documents')]
+ perms=[('dashboard.view','Voir le tableau de bord'),('tree.view','Voir les arbres'),('tree.create','Créer une plantation'),('tree.approve','Valider une plantation'),('tree.edit','Modifier un arbre'),('tree.delete','Supprimer un arbre'),('watering.view','Voir les arrosages'),('watering.create','Enregistrer un arrosage'),('mission.view','Voir les missions'),('event.view','Voir les événements'),('event.register','S’inscrire aux événements'),('event.manage','Gérer les événements'),('intervention.view','Voir les interventions'),('intervention.create','Créer une intervention'),('intervention.manage','Gérer et planifier les interventions'),('team.view','Voir son équipe'),('map.view','Voir la carte'),('notification.view','Voir les notifications'),('volunteer.manage','Gérer les bénévoles'),('project.manage','Gérer les projets'),('zone.manage','Gérer les zones'),('geo.manage','Gérer la géographie'),('species.manage','Gérer les espèces'),('role.manage','Gérer les rôles et droits'),('user.manage','Gérer les utilisateurs'),('donation.view','Voir les dons'),('donation.manage','Gérer les dons'),('nursery.view','Voir la pépinière'),('nursery.manage','Gérer la pépinière'),('equipment.view','Voir le matériel'),('equipment.manage','Gérer le matériel'),('member.view','Voir les adhérents'),('member.manage','Gérer les adhérents'),('cash.view','Voir la caisse'),('cash.manage','Gérer la caisse'),('print.manage','Imprimer les documents'),('association.read','Voir association'),('association.update','Modifier association'),('member.roles','Gérer les rôles association'),('project.read','Voir projets'),('project.create','Créer projets'),('project.update','Modifier projets'),('project.delete','Supprimer projets'),('zone.read','Voir zones'),('zone.create','Créer zones'),('zone.update','Modifier zones'),('zone.delete','Supprimer zones'),('tree.request_delete','Demander suppression arbre'),('mission.create','Créer missions'),('mission.update','Modifier missions'),('mission.close','Clôturer missions'),('team.create','Créer équipes'),('team.update','Modifier équipes'),('collaboration.read','Voir collaborations'),('collaboration.invite','Inviter association'),('collaboration.accept','Traiter invitation'),('collaboration.manage','Gérer collaborations'),('report.read','Voir rapports'),('report.full','Rapports complets')]
  for x in perms:c.execute('INSERT OR IGNORE INTO permissions(code,label) VALUES(?,?)',x)
  admin_role=c.execute("SELECT id FROM roles WHERE name='super_admin'").fetchone()['id']
  for p in c.execute('SELECT id FROM permissions'): c.execute('INSERT OR IGNORE INTO role_permissions(role_id,permission_id) VALUES(?,?)',(admin_role,p['id']))
@@ -223,7 +306,10 @@ def seed(c):
   c.execute("INSERT INTO trees(tree_code,qr_code,species_id,species,project_id,zone_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,health_status,watering_status,approval_status,approved_by_user_id,approved_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",('TREE-0001','QR-TREE-0001',sp,'Caroubier',p['id'],z,'2026-11-15',u,'Super Admin',35.767,-0.606,'Bon','À jour','approved',u,datetime.now().isoformat(timespec='minutes'),datetime.now().isoformat(timespec='minutes')))
 
 def init_db():
+ backup_before_lot12_migration()
  c=db()
+ c.execute('PRAGMA journal_mode=WAL')
+ c.execute('PRAGMA synchronous=NORMAL')
  c.executescript(SCHEMA)
  migrate_legacy(c)
  seed(c)
@@ -254,6 +340,8 @@ def init_db():
  CREATE INDEX IF NOT EXISTS idx_trees_species ON trees(species_id,species);
  CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role,active);
  CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,is_read,created_at);
+ CREATE INDEX IF NOT EXISTS idx_notifications_action_pending ON notifications(user_id,action_type,decision,is_read);
+ CREATE INDEX IF NOT EXISTS idx_submission_tokens_created ON submission_tokens(created_at);
  CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
  CREATE INDEX IF NOT EXISTS idx_events_start_status ON events(start_at,status,active);
  CREATE INDEX IF NOT EXISTS idx_tasks_start_status ON operational_tasks(start_at,status);
@@ -296,6 +384,8 @@ I18N={
 
 }
 
+I18N_LOT11={'Erreur': {'ar': 'خطأ', 'en': 'Error'}, 'Succès': {'ar': 'نجاح', 'en': 'Success'}, 'Avertissement': {'ar': 'تنبيه', 'en': 'Warning'}, 'Information': {'ar': 'معلومة', 'en': 'Information'}, 'Opération effectuée avec succès.': {'ar': 'تمت العملية بنجاح.', 'en': 'Operation completed successfully.'}, 'Enregistrement effectué.': {'ar': 'تم الحفظ.', 'en': 'Saved successfully.'}, 'Modification enregistrée.': {'ar': 'تم حفظ التعديلات.', 'en': 'Changes saved.'}, 'Suppression effectuée.': {'ar': 'تم الحذف.', 'en': 'Deleted successfully.'}, 'Élément archivé.': {'ar': 'تمت الأرشفة.', 'en': 'Item archived.'}, 'Accès refusé.': {'ar': 'تم رفض الوصول.', 'en': 'Access denied.'}, 'Action non autorisée.': {'ar': 'الإجراء غير مسموح.', 'en': 'Action not allowed.'}, 'Association active': {'ar': 'الجمعية النشطة', 'en': 'Active association'}, 'Espace personnel': {'ar': 'المساحة الشخصية', 'en': 'Personal space'}, 'Espace association': {'ar': 'مساحة الجمعية', 'en': 'Association space'}, 'Personnel': {'ar': 'شخصي', 'en': 'Personal'}, 'Association': {'ar': 'الجمعية', 'en': 'Association'}, 'Associations': {'ar': 'الجمعيات', 'en': 'Associations'}, 'Changer d’association': {'ar': 'تغيير الجمعية', 'en': 'Switch association'}, 'Collaboration': {'ar': 'التعاون', 'en': 'Collaboration'}, 'Collaborations': {'ar': 'التعاونات', 'en': 'Collaborations'}, 'Centre de collaboration': {'ar': 'مركز التعاون', 'en': 'Collaboration center'}, 'Association propriétaire': {'ar': 'الجمعية المالكة', 'en': 'Owner association'}, 'Association partenaire': {'ar': 'الجمعية الشريكة', 'en': 'Partner association'}, 'Partenaire': {'ar': 'شريك', 'en': 'Partner'}, 'Propriétaire': {'ar': 'المالك', 'en': 'Owner'}, 'Invitation': {'ar': 'دعوة', 'en': 'Invitation'}, 'Invitations': {'ar': 'الدعوات', 'en': 'Invitations'}, 'Invitation envoyée.': {'ar': 'تم إرسال الدعوة.', 'en': 'Invitation sent.'}, 'Invitation acceptée.': {'ar': 'تم قبول الدعوة.', 'en': 'Invitation accepted.'}, 'Invitation refusée.': {'ar': 'تم رفض الدعوة.', 'en': 'Invitation rejected.'}, 'Quitter la collaboration': {'ar': 'مغادرة التعاون', 'en': 'Leave collaboration'}, 'Terminer la collaboration': {'ar': 'إنهاء التعاون', 'en': 'End collaboration'}, 'Lecture': {'ar': 'قراءة', 'en': 'View'}, 'Intervenir': {'ar': 'التدخل', 'en': 'Intervene'}, 'Ajouter des arbres': {'ar': 'إضافة أشجار', 'en': 'Add trees'}, 'Gérer les missions': {'ar': 'إدارة المهام', 'en': 'Manage missions'}, 'Non lue': {'ar': 'غير مقروءة', 'en': 'Unread'}, 'Non lu': {'ar': 'غير مقروء', 'en': 'Unread'}, 'Traitée': {'ar': 'تمت المعالجة', 'en': 'Processed'}, 'Traité': {'ar': 'تمت المعالجة', 'en': 'Processed'}, 'Marquer comme lue': {'ar': 'تحديد كمقروء', 'en': 'Mark as read'}, 'Tout marquer comme lu': {'ar': 'تحديد الكل كمقروء', 'en': 'Mark all as read'}, 'Date de lecture': {'ar': 'تاريخ القراءة', 'en': 'Read date'}, 'Date de traitement': {'ar': 'تاريخ المعالجة', 'en': 'Processed date'}, 'Action requise': {'ar': 'إجراء مطلوب', 'en': 'Action required'}, 'Priorité': {'ar': 'الأولوية', 'en': 'Priority'}, 'Basse': {'ar': 'منخفضة', 'en': 'Low'}, 'Normale': {'ar': 'عادية', 'en': 'Normal'}, 'Haute': {'ar': 'مرتفعة', 'en': 'High'}, 'Urgente': {'ar': 'عاجلة', 'en': 'Urgent'}, 'À faire': {'ar': 'للإنجاز', 'en': 'To do'}, 'En cours': {'ar': 'قيد التنفيذ', 'en': 'In progress'}, 'Terminée': {'ar': 'منتهية', 'en': 'Completed'}, 'Clôturée': {'ar': 'مغلقة', 'en': 'Closed'}, 'Clôturer': {'ar': 'إغلاق', 'en': 'Close'}, 'Ouvert': {'ar': 'مفتوح', 'en': 'Open'}, 'Fermé': {'ar': 'مغلق', 'en': 'Closed'}, 'Approuvé': {'ar': 'موافق عليه', 'en': 'Approved'}, 'Rejeté': {'ar': 'مرفوض', 'en': 'Rejected'}, 'Brouillon': {'ar': 'مسودة', 'en': 'Draft'}, 'Archivé': {'ar': 'مؤرشف', 'en': 'Archived'}, 'Archivée': {'ar': 'مؤرشفة', 'en': 'Archived'}, 'Bon': {'ar': 'جيد', 'en': 'Good'}, 'Moyen': {'ar': 'متوسط', 'en': 'Fair'}, 'Mauvais': {'ar': 'سيئ', 'en': 'Poor'}, 'Critique': {'ar': 'حرج', 'en': 'Critical'}, 'À arroser': {'ar': 'يحتاج إلى السقي', 'en': 'Needs watering'}, 'Arrosé': {'ar': 'تم سقيه', 'en': 'Watered'}, 'Arrosée': {'ar': 'تم سقيها', 'en': 'Watered'}, 'Observation': {'ar': 'ملاحظة', 'en': 'Observation'}, 'Observations': {'ar': 'ملاحظات', 'en': 'Observations'}, 'Intervention': {'ar': 'تدخل', 'en': 'Intervention'}, 'Interventions': {'ar': 'التدخلات', 'en': 'Interventions'}, 'Historique': {'ar': 'السجل', 'en': 'History'}, 'Voir l’historique': {'ar': 'عرض السجل', 'en': 'View history'}, 'Créer': {'ar': 'إنشاء', 'en': 'Create'}, 'Valider': {'ar': 'تأكيد', 'en': 'Validate'}, 'Confirmer': {'ar': 'تأكيد', 'en': 'Confirm'}, 'Fermer': {'ar': 'إغلاق', 'en': 'Close'}, 'Réinitialiser': {'ar': 'إعادة تعيين', 'en': 'Reset'}, 'Filtrer': {'ar': 'تصفية', 'en': 'Filter'}, 'Filtres': {'ar': 'الفلاتر', 'en': 'Filters'}, 'Effacer les filtres': {'ar': 'مسح الفلاتر', 'en': 'Clear filters'}, 'Du': {'ar': 'من', 'en': 'From'}, 'Au': {'ar': 'إلى', 'en': 'To'}, 'Période': {'ar': 'الفترة', 'en': 'Period'}, 'Type d’action': {'ar': 'نوع الإجراء', 'en': 'Action type'}, 'État': {'ar': 'الحالة', 'en': 'Condition'}, 'Santé': {'ar': 'الصحة', 'en': 'Health'}, 'Bénévole': {'ar': 'متطوع', 'en': 'Volunteer'}, 'Tous les projets': {'ar': 'كل المشاريع', 'en': 'All projects'}, 'Toutes les zones': {'ar': 'كل المناطق', 'en': 'All zones'}, 'Toutes les espèces': {'ar': 'كل الأنواع', 'en': 'All species'}, 'Tous les bénévoles': {'ar': 'كل المتطوعين', 'en': 'All volunteers'}, 'Tous les statuts': {'ar': 'كل الحالات', 'en': 'All statuses'}, 'Tous les types': {'ar': 'كل الأنواع', 'en': 'All types'}, 'Aucun résultat': {'ar': 'لا توجد نتائج', 'en': 'No results'}, 'Aucune donnée': {'ar': 'لا توجد بيانات', 'en': 'No data'}, 'Aucune notification': {'ar': 'لا توجد إشعارات', 'en': 'No notifications'}, 'Aucune mission': {'ar': 'لا توجد مهام', 'en': 'No missions'}, 'Aucun événement': {'ar': 'لا توجد فعاليات', 'en': 'No events'}, 'Aucun arbre': {'ar': 'لا توجد أشجار', 'en': 'No trees'}, 'Aucune zone': {'ar': 'لا توجد مناطق', 'en': 'No zones'}, 'Aucun projet': {'ar': 'لا توجد مشاريع', 'en': 'No projects'}, 'Latitude': {'ar': 'خط العرض', 'en': 'Latitude'}, 'Longitude': {'ar': 'خط الطول', 'en': 'Longitude'}, 'Position GPS': {'ar': 'موقع GPS', 'en': 'GPS position'}, 'Utiliser ma position': {'ar': 'استخدام موقعي', 'en': 'Use my location'}, 'Localiser': {'ar': 'تحديد الموقع', 'en': 'Locate'}, 'GPS indisponible': {'ar': 'GPS غير متاح', 'en': 'GPS unavailable'}, 'Autorisation GPS refusée': {'ar': 'تم رفض إذن GPS', 'en': 'GPS permission denied'}, 'Photo actuelle': {'ar': 'الصورة الحالية', 'en': 'Current photo'}, 'Remplacer la photo': {'ar': 'استبدال الصورة', 'en': 'Replace photo'}, 'Supprimer la photo': {'ar': 'حذف الصورة', 'en': 'Delete photo'}, 'Caméra': {'ar': 'الكاميرا', 'en': 'Camera'}, 'Démarrer / réessayer': {'ar': 'بدء / إعادة المحاولة', 'en': 'Start / retry'}, 'Arrêter': {'ar': 'إيقاف', 'en': 'Stop'}, 'Lire une photo': {'ar': 'قراءة صورة', 'en': 'Read an image'}, 'Ouvrir la fiche': {'ar': 'فتح البطاقة', 'en': 'Open details'}, 'Code arbre ou QR': {'ar': 'رمز الشجرة أو QR', 'en': 'Tree code or QR'}, 'Scanner le QR d’un arbre': {'ar': 'مسح رمز QR لشجرة', 'en': 'Scan a tree QR code'}, 'Caméra non démarrée.': {'ar': 'الكاميرا لم تبدأ.', 'en': 'Camera not started.'}, 'Autorisez la caméra.': {'ar': 'اسمح باستخدام الكاميرا.', 'en': 'Allow camera access.'}, 'Objectif': {'ar': 'الهدف', 'en': 'Target'}, 'Objectif du projet': {'ar': 'هدف المشروع', 'en': 'Project target'}, 'Objectif de la zone': {'ar': 'هدف المنطقة', 'en': 'Zone target'}, 'Arbres plantés': {'ar': 'الأشجار المغروسة', 'en': 'Planted trees'}, 'Arbres restants': {'ar': 'الأشجار المتبقية', 'en': 'Remaining trees'}, 'Capacité': {'ar': 'السعة', 'en': 'Capacity'}, 'Dépasser l’objectif': {'ar': 'تجاوز الهدف', 'en': 'Exceed target'}, 'Membres': {'ar': 'الأعضاء', 'en': 'Members'}, 'Membre': {'ar': 'عضو', 'en': 'Member'}, 'Ajouter des membres': {'ar': 'إضافة أعضاء', 'en': 'Add members'}, 'Modifier les membres': {'ar': 'تعديل الأعضاء', 'en': 'Edit members'}, 'Date d’inscription': {'ar': 'تاريخ التسجيل', 'en': 'Registration date'}, 'Activer': {'ar': 'تفعيل', 'en': 'Activate'}, 'Désactiver': {'ar': 'تعطيل', 'en': 'Deactivate'}, 'Administrateur': {'ar': 'مسؤول', 'en': 'Administrator'}, 'Permissions': {'ar': 'الصلاحيات', 'en': 'Permissions'}, 'Lecture seule': {'ar': 'قراءة فقط', 'en': 'Read only'}, 'Accès interdit': {'ar': 'الوصول ممنوع', 'en': 'Access forbidden'}, 'Vous n’avez pas accès à cette ressource.': {'ar': 'ليس لديك صلاحية للوصول إلى هذا المورد.', 'en': 'You do not have access to this resource.'}, 'Cette action nécessite les droits administrateur.': {'ar': 'يتطلب هذا الإجراء صلاحيات المسؤول.', 'en': 'This action requires administrator permissions.'}, 'Ressource introuvable.': {'ar': 'المورد غير موجود.', 'en': 'Resource not found.'}, 'Projet incompatible avec la zone.': {'ar': 'المشروع غير متوافق مع المنطقة.', 'en': 'Project is incompatible with the zone.'}, 'Zone incompatible avec le projet.': {'ar': 'المنطقة غير متوافقة مع المشروع.', 'en': 'Zone is incompatible with the project.'}, 'Objectif dépassé.': {'ar': 'تم تجاوز الهدف.', 'en': 'Target exceeded.'}, 'Quantité invalide.': {'ar': 'الكمية غير صالحة.', 'en': 'Invalid quantity.'}, 'Ce formulaire a déjà été envoyé.': {'ar': 'تم إرسال هذا النموذج مسبقاً.', 'en': 'This form has already been submitted.'}, 'Traitement en cours…': {'ar': 'جارٍ المعالجة…', 'en': 'Processing…'}, 'Enregistrer les modifications': {'ar': 'حفظ التعديلات', 'en': 'Save changes'}, 'Créer le projet': {'ar': 'إنشاء المشروع', 'en': 'Create project'}, 'Créer la zone': {'ar': 'إنشاء المنطقة', 'en': 'Create zone'}, 'Créer l’équipe': {'ar': 'إنشاء الفريق', 'en': 'Create team'}, 'Créer la mission': {'ar': 'إنشاء المهمة', 'en': 'Create mission'}, 'Créer l’événement': {'ar': 'إنشاء الفعالية', 'en': 'Create event'}, 'Rapport': {'ar': 'تقرير', 'en': 'Report'}, 'Statistiques': {'ar': 'الإحصائيات', 'en': 'Statistics'}, 'Exporter CSV': {'ar': 'تصدير CSV', 'en': 'Export CSV'}, 'Télécharger': {'ar': 'تنزيل', 'en': 'Download'}, 'Imprimer la fiche': {'ar': 'طباعة البطاقة', 'en': 'Print details'}, 'Origine': {'ar': 'الأصل', 'en': 'Origin'}, 'Régions': {'ar': 'المناطق', 'en': 'Regions'}, 'Sol': {'ar': 'التربة', 'en': 'Soil'}, 'Eau': {'ar': 'الماء', 'en': 'Water'}, 'Distance': {'ar': 'المسافة', 'en': 'Distance'}, 'Hauteur adulte': {'ar': 'الارتفاع عند النضج', 'en': 'Adult height'}, 'Usages': {'ar': 'الاستخدامات', 'en': 'Uses'}, 'Entretien': {'ar': 'العناية', 'en': 'Maintenance'}, 'Maladies et précautions': {'ar': 'الأمراض والاحتياطات', 'en': 'Diseases and precautions'}, 'Maladies et parasites': {'ar': 'الأمراض والآفات', 'en': 'Diseases and pests'}, 'Compatibilité et précautions': {'ar': 'التوافق والاحتياطات', 'en': 'Compatibility and precautions'}, 'Famille non renseignée': {'ar': 'العائلة غير محددة', 'en': 'Family not specified'}, 'Variable': {'ar': 'متغير', 'en': 'Variable'}, 'Soleil': {'ar': 'الشمس', 'en': 'Sun'}, 'À adapter': {'ar': 'يُحدد حسب الحالة', 'en': 'To be adapted'}, 'Biodiversité et paysage': {'ar': 'التنوع البيولوجي والمنظر الطبيعي', 'en': 'Biodiversity and landscape'}, 'Année': {'ar': 'السنة', 'en': 'Year'}, 'Carte d’adhérent': {'ar': 'بطاقة العضو', 'en': 'Membership card'}, 'Imprimer la carte PVC': {'ar': 'طباعة بطاقة PVC', 'en': 'Print PVC card'}, 'Retour à la liste': {'ar': 'العودة إلى القائمة', 'en': 'Back to list'}, 'Précédent': {'ar': 'السابق', 'en': 'Previous'}, 'Suivant': {'ar': 'التالي', 'en': 'Next'}}
+I18N.update(I18N_LOT11)
 def current_lang():
  lang=session.get('lang') or request.cookies.get('mytree_lang') or 'fr'
  return lang if lang in SUPPORTED_LANGS else 'fr'
@@ -315,9 +405,21 @@ def language_switcher():
  return '<div class="lang-switch">'+''.join(out)+'</div>'
 
 def i18n_script():
- lang=current_lang(); trans={} if lang=='fr' else {k:v.get(lang,k) for k,v in I18N.items()}
- return '''<script id="mytree-i18n">window.MYTREE_LANG=%s;window.MYTREE_I18N=%s;
-(function(){function ex(s){return (s||'').replace(/\\s+/g,' ').trim()}function tv(k){if(window.MYTREE_I18N[k])return window.MYTREE_I18N[k];const keys=Object.keys(window.MYTREE_I18N).sort((a,b)=>b.length-a.length);for(const x of keys){if(k.endsWith(x)){const pre=k.slice(0,k.length-x.length);if(!pre||/[^A-Za-zÀ-ÿ\u0600-\u06FF]$/.test(pre))return pre+window.MYTREE_I18N[x]}}return null}function go(root){if(!window.MYTREE_I18N)return;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),a=[];while(w.nextNode())a.push(w.currentNode);a.forEach(n=>{if(n.parentElement&&['SCRIPT','STYLE','TEXTAREA'].includes(n.parentElement.tagName))return;let raw=n.nodeValue,k=ex(raw),v=tv(k);if(v){let l=(raw.match(/^\\s*/)||[''])[0],r=(raw.match(/\\s*$/)||[''])[0];n.nodeValue=l+v+r}});document.querySelectorAll('[placeholder]').forEach(e=>{let k=ex(e.placeholder);if(window.MYTREE_I18N[k])e.placeholder=window.MYTREE_I18N[k]});document.querySelectorAll('[title]').forEach(e=>{let k=ex(e.title);if(window.MYTREE_I18N[k])e.title=window.MYTREE_I18N[k]});document.querySelectorAll('input[type=submit],input[type=button]').forEach(e=>{let k=ex(e.value);if(window.MYTREE_I18N[k])e.value=window.MYTREE_I18N[k]})}document.addEventListener('DOMContentLoaded',()=>go(document.body));new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{if(n.nodeType===1)go(n)}))).observe(document.documentElement,{childList:true,subtree:true});})();</script>'''%(json.dumps(lang),json.dumps(trans,ensure_ascii=False))
+ lang=current_lang()
+ trans={} if lang=='fr' else {k:v.get(lang,k) for k,v in I18N.items()}
+ js = r'''<script id="mytree-i18n">window.MYTREE_LANG=__LANG__;window.MYTREE_I18N=__DICT__;
+(function(){
+ const D=window.MYTREE_I18N||{};
+ function ex(s){return (s||'').replace(/\s+/g,' ').trim()}
+ function tv(k){if(!k)return null;if(D[k])return D[k];const keys=Object.keys(D).sort((a,b)=>b.length-a.length);for(const x of keys){if(k.endsWith(x)){const pre=k.slice(0,k.length-x.length);if(!pre||/[^A-Za-zÀ-ÿ\u0600-\u06FF]$/.test(pre))return pre+D[x]}}return null}
+ function attr(e,n){if(!e.hasAttribute(n))return;let k=ex(e.getAttribute(n)),v=tv(k);if(v)e.setAttribute(n,v)}
+ function oneText(n){if(!n.parentElement||['SCRIPT','STYLE','TEXTAREA','CODE','PRE'].includes(n.parentElement.tagName))return;let raw=n.nodeValue,k=ex(raw),v=tv(k);if(v){let l=(raw.match(/^\s*/)||[''])[0],r=(raw.match(/\s*$/)||[''])[0];n.nodeValue=l+v+r}}
+ function go(root){if(!root||!D)return;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),a=[];while(w.nextNode())a.push(w.currentNode);a.forEach(oneText);(root.querySelectorAll?root.querySelectorAll('[placeholder],[title],[aria-label],[data-i18n],input[type=submit],input[type=button],option'):[]).forEach(e=>{attr(e,'placeholder');attr(e,'title');attr(e,'aria-label');if(e.dataset&&e.dataset.i18n){let v=tv(ex(e.dataset.i18n));if(v)e.textContent=v}if(e.matches('input[type=submit],input[type=button]')){let v=tv(ex(e.value));if(v)e.value=v}if(e.tagName==='OPTION'){let v=tv(ex(e.textContent));if(v)e.textContent=v}})}
+ document.documentElement.lang=window.MYTREE_LANG||'fr';document.documentElement.dir=window.MYTREE_LANG==='ar'?'rtl':'ltr';
+ document.addEventListener('DOMContentLoaded',()=>go(document.body));
+ new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{if(n.nodeType===1)go(n);else if(n.nodeType===3)oneText(n)}))).observe(document.documentElement,{childList:true,subtree:true});
+})();</script>'''
+ return js.replace('__LANG__',json.dumps(lang)).replace('__DICT__',json.dumps(trans,ensure_ascii=False))
 
 @app.route('/language/<lang>')
 def set_language(lang):
@@ -325,7 +427,7 @@ def set_language(lang):
  session['lang']=lang
  if session.get('uid'):
   c=db(); c.execute('UPDATE users SET preferred_language=? WHERE id=?',(lang,session['uid'])); c.commit(); c.close()
- target=request.args.get('next') or request.referrer or '/public'
+ target=request.args.get('next') or '/public'
  if not target.startswith('/'):target='/public'
  resp=redirect(target); resp.set_cookie('mytree_lang',lang,max_age=365*24*3600,samesite='Lax'); return resp
 
@@ -356,6 +458,28 @@ def login_required(fn):
   if not session.get('uid'): return redirect('/login')
   return fn(*a,**k)
  return w
+
+def _safe_local_target(value, fallback='/'):
+ value=(value or '').strip()
+ return value if value.startswith('/') and not value.startswith('//') else fallback
+
+@app.before_request
+def prevent_duplicate_post():
+ """Lot 9 — bloque la répétition du même formulaire POST par jeton unique SQL."""
+ if request.method!='POST': return None
+ token=(request.form.get('_submit_token') or request.headers.get('X-MyTree-Submit-Token') or '').strip()
+ if not token: return None
+ c=db()
+ try:
+  c.execute('INSERT INTO submission_tokens(token,user_id,route,created_at) VALUES(?,?,?,?)',(token,session.get('uid'),request.path,datetime.now().isoformat(timespec='seconds')))
+  cutoff=(datetime.now()-timedelta(days=1)).isoformat(timespec='seconds')
+  c.execute('DELETE FROM submission_tokens WHERE created_at<?',(cutoff,))
+  c.commit(); c.close(); return None
+ except sqlite3.IntegrityError:
+  c.close()
+  flash('Cette opération a déjà été envoyée. Aucun double enregistrement n’a été créé.','warning')
+  fallback='/' if is_admin() else '/volunteer'
+  return redirect(_safe_local_target(request.form.get('return_to') or request.referrer or fallback,fallback))
 
 def is_admin(): return session.get('role') in ('super_admin','admin')
 
@@ -532,6 +656,121 @@ def volunteer_nav():
  return body+'</aside>'
 
 
+
+LOT11_STYLE='''<style id="mytree-lot11-i18n">
+html[dir="rtl"] body{direction:rtl;text-align:right}
+html[dir="rtl"] header,html[dir="rtl"] .header-actions,html[dir="rtl"] .toolbar,html[dir="rtl"] .section-title,html[dir="rtl"] .crud-actions{direction:rtl}
+html[dir="rtl"] input,html[dir="rtl"] select,html[dir="rtl"] textarea{direction:rtl;text-align:right}
+html[dir="rtl"] input[type="email"],html[dir="rtl"] input[type="tel"],html[dir="rtl"] input[type="number"],html[dir="rtl"] input[type="date"],html[dir="rtl"] input[type="datetime-local"],html[dir="rtl"] .code,html[dir="rtl"] .gps-coordinates{direction:ltr;text-align:left}
+html[dir="rtl"] table{direction:rtl}html[dir="rtl"] th,html[dir="rtl"] td{text-align:right}
+html[dir="rtl"] .leaflet-container,html[dir="rtl"] .leaflet-control,html[dir="rtl"] .leaflet-popup-content{direction:ltr;text-align:left}
+html[dir="rtl"] .leaflet-popup-content .rtl-content{direction:rtl;text-align:right}
+html[dir="rtl"] .lang-switch{direction:ltr}
+html[dir="rtl"] .mobile-connected-nav{direction:rtl}html[dir="rtl"] .mobile-connected-nav a{text-align:center}
+html[dir="rtl"] .flash{border-left:0;border-right-width:4px}
+html[dir="rtl"] ul,html[dir="rtl"] ol{padding-right:22px;padding-left:0}
+html[dir="rtl"] .filter-panel,html[dir="rtl"] .modal,html[dir="rtl"] .card{direction:rtl;text-align:right}
+html[dir="rtl"] .smart-list-search{direction:rtl;text-align:right}
+@media(max-width:700px){html[dir="rtl"] .header-actions,html[dir="rtl"] .mobile-title-row{direction:rtl}html[dir="rtl"] .form label{text-align:right}}
+</style>'''
+
+def connected_mobile_nav():
+ # Lot 10: navigation métier mobile commune. L'interface publique n'est jamais injectée ici.
+ items=[
+  ('/' if is_admin() else '/volunteer','🏠','Accueil',None),
+  ('/map','🗺','Carte','map.view'),
+  ('/notifications','🔔','Alertes','notification.view'),
+  ('/missions' if is_admin() else '/volunteer/missions','🎯','Missions','mission.view'),
+  ('/trees' if is_admin() else '/volunteer/field','🌳','Terrain','tree.view'),
+ ]
+ out='<nav class="mobile-connected-nav" aria-label="Navigation mobile">'
+ for href,icon,label,perm in items:
+  if perm and not has_permission(perm): continue
+  active=' active' if request.path==href or (href!="/" and request.path.startswith(href+"/")) else ''
+  out+=f'<a class="{active.strip()}" href="{href}"><span>{icon}</span>{tr(label)}</a>'
+ return out+'</nav>'
+
+LOT9_UX_SCRIPT='''<script id="mytree-lot9-ux">
+(function(){
+ function token(){try{return crypto.randomUUID()}catch(e){return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)}}
+ function prepareForm(f){
+  if(!f || (f.method||'get').toLowerCase()!=='post' || f.dataset.lot9==='1')return;
+  f.dataset.lot9='1';
+  let t=f.querySelector('input[name="_submit_token"]');
+  if(!t){t=document.createElement('input');t.type='hidden';t.name='_submit_token';t.value=token();f.appendChild(t)}
+  f.addEventListener('submit',function(e){
+   if(f.dataset.submitting==='1'){e.preventDefault();return false}
+   if(!f.checkValidity())return;
+   f.dataset.submitting='1';
+   const active=e.submitter;
+   // Preserve submitter semantics before disabling buttons (name/value, formaction, formmethod).
+   if(active){
+    if(active.name){const h=document.createElement('input');h.type='hidden';h.name=active.name;h.value=active.value||'';f.appendChild(h)}
+    if(active.getAttribute('formaction'))f.action=active.formAction;
+    if(active.getAttribute('formmethod'))f.method=active.formMethod;
+   }
+   const buttons=f.querySelectorAll('button[type="submit"],input[type="submit"],button:not([type])');
+   buttons.forEach(function(b){b.disabled=true;b.classList.add('is-submitting')});
+   if(active&&active.tagName==='BUTTON')active.textContent='Enregistrement…';
+  },true);
+ }
+ function flashType(el){
+  const t=(el.textContent||'').toLowerCase();
+  if(/incorrect|invalide|introuvable|erreur|impossible|obligatoire|non autoris|refus/.test(t))el.classList.add('flash-error');
+  else if(/déjà|attention|aucun|manquant|ne peut|avert/.test(t))el.classList.add('flash-warning');
+  else el.classList.add('flash-success');
+ }
+ function scan(root){(root||document).querySelectorAll('form').forEach(prepareForm);(root||document).querySelectorAll('.flash').forEach(flashType)}
+ document.addEventListener('DOMContentLoaded',function(){scan(document)});
+ new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType===1)scan(n)})})}).observe(document.documentElement,{childList:true,subtree:true});
+})();
+</script>'''
+
+LOT9_STYLE='''<style id="mytree-lot9-style">
+.flash{border-left:5px solid #2e7b47}.flash-success{background:#eef8f1;border-color:#2e7b47}.flash-warning{background:#fff8e5;border-color:#c58b13}.flash-error{background:#fff0f0;border-color:#b43b3b}.is-submitting{opacity:.68;cursor:wait!important}.notif-state{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.notif-help{font-size:13px;color:var(--muted);margin:8px 0 14px}
+</style>'''
+
+LOT10_STYLE='''<style id="mytree-lot10-mobile">
+.mobile-menu-toggle{display:none}.mobile-connected-nav{display:none}
+.table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+img,video,canvas{max-width:100%}
+@media(max-width:700px){
+ body{overflow-x:hidden}
+ header{position:sticky;top:0;z-index:1250;background:#fff;padding:9px 10px!important;gap:8px}
+ .mobile-title-row{width:100%;display:flex;align-items:center;gap:8px}
+ .mobile-title-row .mobile-back{display:none!important}
+ .header-actions{width:100%;display:grid!important;grid-template-columns:1fr auto auto;gap:6px!important;align-items:center}
+ .header-actions .context-switch{grid-column:1/-1;overflow-x:auto;flex-wrap:nowrap!important;padding-bottom:2px}
+ .header-actions>b{display:none}
+ .account-home,.account-logout{min-height:42px;display:flex;align-items:center;justify-content:center;padding:8px!important}
+ .notif-bell{min-width:42px;min-height:42px;display:flex;align-items:center;justify-content:center}
+ main{padding:10px!important;padding-bottom:82px!important;min-width:0}
+ .layout{display:block!important;padding-bottom:0!important}
+ aside.admin-nav,aside.vol-nav{display:none!important}
+ .mobile-connected-nav{display:grid!important;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:1400;background:#102b1c;border-top:1px solid rgba(255,255,255,.18);padding:4px;gap:2px}
+ .mobile-connected-nav a{color:#fff;text-decoration:none;text-align:center;font-size:10px;padding:5px 2px;border-radius:8px;min-width:0}
+ .mobile-connected-nav a span{display:block;font-size:20px;line-height:22px}
+ .mobile-connected-nav a.active{background:#2e7b47}
+ .form{grid-template-columns:1fr!important}
+ input,select,textarea,button,.btn,.action-btn{font-size:16px;min-height:44px}
+ textarea{min-height:110px}
+ .toolbar{display:grid!important;grid-template-columns:1fr!important}
+ .toolbar label,.toolbar .btn{width:100%!important;min-width:0!important}
+ .section-title{display:flex!important;flex-direction:column!important;align-items:stretch!important}
+ .section-title .btn,.section-title .action-btn,.crud-actions,.crud-actions .btn,.crud-actions form{width:100%!important}
+ .crud-actions{display:grid!important;grid-template-columns:1fr!important;gap:7px}
+ .card{overflow-x:auto}
+ table{min-width:680px}
+ .real-map{height:58vh!important;min-height:360px}
+ .map-picker{height:52vh!important;min-height:330px}
+ .photo-actions{display:grid!important;grid-template-columns:1fr!important}
+ .photo-actions .btn{width:100%}
+ .member-picker{max-height:42vh}
+ .filter-panel.open{inset:2vh 1.5vw 0!important}
+ .filter-actions{left:1.5vw!important;right:1.5vw!important}
+}
+</style>'''
+
 def page(title,body,**ctx):
  content=render_template_string(body,tr=tr,lang=current_lang(),**ctx)
  if session.get('uid'):
@@ -547,16 +786,97 @@ def page(title,body,**ctx):
   # Never send Retour back into action-entry forms after a completed/redirected operation.
   if any(x in back_path for x in ['/planting/new','/volunteer/donate','/donations/new','/watering/new']): back_path=home_path
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for m in get_flashed_messages() %}<div class="flash">{{m}}</div>{% endfor %}{{content|safe}}</main></div></body></html>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+'</body></html>'
   return render_template_string(tpl,content=content)
- return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main></body></html>',content=content)
+ return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main></body></html>',content=content)
 
 def filters_from_request():
- return {k:request.args.get(k,'') for k in ['wilaya_id','commune_id','association_id','owner_type','volunteer_id','project_id','zone_id','species_id','sex','health_status','watering_status','approval_status','gps_status','q','quick']}
+ # Alpha 4 Lot 6 — contrat de filtres commun à tous les écrans métier.
+ keys=['wilaya_id','commune_id','association_id','owner_type','volunteer_id','project_id','zone_id','species_id','sex','health_status','watering_status','approval_status','gps_status','q','quick','status','priority','action_type','date_from','date_to']
+ f={k:clean(request.args.get(k,'')) for k in keys}
+ # Compatibilité avec les anciens écrans : event_type/mission_type deviennent action_type.
+ if not f['action_type']:
+  f['action_type']=clean(request.args.get('event_type') or request.args.get('mission_type') or '')
+ return f
+
+def accessible_filter_projects(c,ctx=None):
+ ctx=ctx or active_context(c)
+ # Réutilise la politique de visibilité Lot 5 : association propriétaire + collaborations acceptées/can_view.
+ return accessible_map_projects(c,ctx)
+
+def common_filter_options(c,f=None):
+ f=f or filters_from_request(); ctx=active_context(c)
+ projects=list(accessible_filter_projects(c,ctx)); project_ids=[int(x['id']) for x in projects]
+ if f.get('wilaya_id'):
+  projects=[x for x in projects if str(x['wilaya_id'] or '')==str(f['wilaya_id'])]
+ if f.get('commune_id'):
+  projects=[x for x in projects if str(x['commune_id'] or '')==str(f['commune_id'])]
+ project_ids=[int(x['id']) for x in projects]
+ zones=[]
+ if project_ids:
+  marks=','.join('?'*len(project_ids)); args=list(project_ids); q=f'SELECT * FROM zones WHERE active=1 AND project_id IN ({marks})'
+  if f.get('project_id'): q+=' AND project_id=?'; args.append(f['project_id'])
+  q+=' ORDER BY name'; zones=c.execute(q,args).fetchall()
+ communes_q='SELECT * FROM communes WHERE active=1'; communes_args=[]
+ if f.get('wilaya_id'): communes_q+=' AND wilaya_id=?'; communes_args.append(f['wilaya_id'])
+ communes_q+=' ORDER BY name'
+ if ctx.get('type')=='association' and ctx.get('association_id'):
+  volunteers=c.execute("SELECT u.id,u.name FROM association_memberships am JOIN users u ON u.id=am.user_id WHERE am.association_id=? AND am.status='approved' AND u.active=1 ORDER BY u.name",(ctx['association_id'],)).fetchall()
+ elif ctx.get('type')=='global' and is_super_admin(): volunteers=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall()
+ else: volunteers=c.execute('SELECT id,name FROM users WHERE id=?',(session.get('uid'),)).fetchall()
+ return dict(
+  wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(),
+  communes=c.execute(communes_q,communes_args).fetchall(),projects=projects,zones=zones,
+  species=c.execute('SELECT * FROM species WHERE active=1 ORDER BY name_fr').fetchall(),volunteers=volunteers,
+  associations=approved_associations(c,session.get('uid')) if session.get('uid') else []
+ )
+
+def validate_common_filters(c,f):
+ """Reject forged cross-association IDs instead of silently returning foreign rows."""
+ ctx=active_context(c); allowed_projects={int(x['id']) for x in accessible_filter_projects(c,ctx)}
+ if f.get('association_id'):
+  if ctx.get('type')=='association' and int(f['association_id'])!=int(ctx.get('association_id') or 0): return False,'association_id'
+  if ctx.get('type')=='personal': return False,'association_id'
+ if f.get('project_id'):
+  try: pid=int(f['project_id'])
+  except ValueError: return False,'project_id'
+  if pid not in allowed_projects: return False,'project_id'
+ if f.get('zone_id'):
+  try: zid=int(f['zone_id'])
+  except ValueError: return False,'zone_id'
+  z=c.execute('SELECT id,project_id FROM zones WHERE id=? AND active=1',(zid,)).fetchone()
+  if not z or int(z['project_id']) not in allowed_projects: return False,'zone_id'
+  if f.get('project_id') and int(z['project_id'])!=int(f['project_id']): return False,'zone_id'
+ if f.get('volunteer_id'):
+  try: uid=int(f['volunteer_id'])
+  except ValueError: return False,'volunteer_id'
+  if ctx.get('type')=='association' and not c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(ctx['association_id'],uid)).fetchone(): return False,'volunteer_id'
+  if ctx.get('type')=='personal' and uid!=int(session.get('uid') or 0): return False,'volunteer_id'
+ return True,None
+
+def common_filter_guard(c,f):
+ ok,bad=validate_common_filters(c,f)
+ if ok: return None
+ try: audit_permission_denied('filter.forbidden',bad or 'filter',None,current_association_id(),'Filtre non autorisé: '+str(f.get(bad,'')))
+ except Exception: pass
+ return (jsonify({'error':'forbidden_filter','filter':bad}),403) if request.path.startswith('/api/') else ('Filtre non autorisé pour le contexte actif.',403)
+
+def apply_common_geo_filters(w,p,f,project_alias='p'):
+ if f.get('wilaya_id'): w.append(f'{project_alias}.wilaya_id=?'); p.append(f['wilaya_id'])
+ if f.get('commune_id'): w.append(f'{project_alias}.commune_id=?'); p.append(f['commune_id'])
+ return w,p
+
 def tree_where(f):
- # Alpha 3 policy: every approved tree is globally visible. Context limits actions, never visibility.
- w=['t.active=1']; p=[]
- mapping={'project_id':'t.project_id','zone_id':'t.zone_id','species_id':'t.species_id','health_status':'t.health_status','watering_status':'t.watering_status','approval_status':'t.approval_status','association_id':'t.association_id','volunteer_id':'t.planted_by_user_id'}
+ # Lot 6 : visibilité pilotée par le contexte + projets collaboratifs accessibles.
+ w=['t.active=1']; p=[]; ctx=active_context()
+ if ctx.get('type')=='personal': w+=['t.association_id IS NULL','t.planted_by_user_id=?']; p.append(session.get('uid'))
+ elif ctx.get('type')=='association' and ctx.get('association_id'):
+  c=db(); ids=[int(x['id']) for x in accessible_filter_projects(c,ctx)]; c.close()
+  if ids:
+   marks=','.join('?'*len(ids)); w.append(f'(t.association_id=? OR t.project_id IN ({marks}))'); p.append(ctx['association_id']); p.extend(ids)
+  else: w.append('t.association_id=?'); p.append(ctx['association_id'])
+ elif not is_super_admin(): w.append('1=0')
+ mapping={'project_id':'t.project_id','zone_id':'t.zone_id','species_id':'t.species_id','health_status':'t.health_status','watering_status':'t.watering_status','approval_status':'t.approval_status','volunteer_id':'t.planted_by_user_id'}
  for k,col in mapping.items():
   if f.get(k): w.append(col+'=?'); p.append(f[k])
  if f.get('wilaya_id'): w.append('COALESCE(t.wilaya_id,z.wilaya_id,p.wilaya_id)=?'); p.append(f['wilaya_id'])
@@ -564,17 +884,18 @@ def tree_where(f):
  if f.get('owner_type')=='individual': w.append('t.association_id IS NULL')
  if f.get('owner_type')=='association': w.append('t.association_id IS NOT NULL')
  if f.get('quick')=='mine': w.append('t.planted_by_user_id=?'); p.append(session.get('uid'))
- if f.get('quick')=='individuals': w.append('t.association_id IS NULL')
- if f.get('quick')=='associations': w.append('t.association_id IS NOT NULL')
  if f.get('quick')=='watering': w.append("t.watering_status IN ('À arroser','Urgent')")
  if f.get('gps_status')=='missing': w.append('(t.latitude IS NULL OR t.longitude IS NULL)')
  if f.get('gps_status')=='mapped': w.append('(t.latitude IS NOT NULL AND t.longitude IS NOT NULL)')
  if f.get('gps_status')=='verify': w.append("COALESCE(t.gps_review_status,'ok')='to_verify'")
+ if f.get('date_from'): w.append("date(COALESCE(t.planted_at,t.created_at))>=date(?)"); p.append(f['date_from'])
+ if f.get('date_to'): w.append("date(COALESCE(t.planted_at,t.created_at))<=date(?)"); p.append(f['date_to'])
  if f.get('q'): w.append('(t.tree_code LIKE ? OR s.name_fr LIKE ? OR u.name LIKE ? OR a.name LIKE ?)'); p += ['%'+f['q']+'%']*4
  return ' AND '.join(w),p
 
 def filter_options(c):
- ps,pp=context_condition('projects'); zs,zp=context_condition('zones'); return dict(wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(),communes=c.execute('SELECT * FROM communes WHERE active=1 ORDER BY name').fetchall(),projects=c.execute('SELECT * FROM projects WHERE active=1 AND '+ps+' ORDER BY name',pp).fetchall(),zones=c.execute('SELECT * FROM zones WHERE active=1 AND '+zs+' ORDER BY name',zp).fetchall(),species=c.execute('SELECT * FROM species WHERE active=1 ORDER BY name_fr').fetchall())
+ # Compatibilité historique : tous les formulaires existants bénéficient désormais des options Lot 6.
+ return common_filter_options(c,filters_from_request())
 
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -723,9 +1044,11 @@ def dashboard():
 @app.route('/trees')
 @login_required
 def trees():
- f=filters_from_request(); c=db(); where,params=tree_where(f); opts=filter_options(c)
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ where,params=tree_where(f); opts=common_filter_options(c,f)
  rows=c.execute('''SELECT t.*,s.name_fr species_name,p.name project_name,z.name zone_name,u.name volunteer_name,c.name commune_name,w.name wilaya_name FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN users u ON u.id=t.planted_by_user_id LEFT JOIN communes c ON c.id=p.commune_id LEFT JOIN wilayas w ON w.id=p.wilaya_id WHERE '''+where+' ORDER BY t.id DESC',params).fetchall(); c.close()
- return page('Arbres','''<div class="section-title"><div><h2>Liste des arbres</h2><p class="sub">Filtrez les arbres sans GPS puis lancez le positionnement rapide.</p></div><div class="action-set"><a class="action-btn action-primary" href="/planting/new">＋ Nouvel arbre</a><a class="action-btn action-map" href="/trees?gps_status=missing">📍 Sans GPS</a><a class="action-btn action-view" href="/volunteer/gps-quick">⚡ Position GPS rapide</a></div></div><form class="card toolbar"><label>Recherche<input name="q" value="{{f.q}}"></label><label>Wilaya<select name="wilaya_id"><option value="">Toutes</option>{% for x in wilayas %}<option value="{{x.id}}" {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">Toutes</option>{% for x in communes %}<option value="{{x.id}}" {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Projet<select name="project_id"><option value="">Tous</option>{% for x in projects %}<option value="{{x.id}}" {% if f.project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id"><option value="">Toutes</option>{% for x in zones %}<option value="{{x.id}}" {% if f.zone_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Espèce<select name="species_id"><option value="">Toutes</option>{% for x in species %}<option value="{{x.id}}" {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label><label>Position carte<select name="gps_status"><option value="">Toutes</option><option value="mapped" {% if f.gps_status=='mapped' %}selected{% endif %}>Avec GPS</option><option value="missing" {% if f.gps_status=='missing' %}selected{% endif %}>Sans GPS</option><option value="verify" {% if f.gps_status=='verify' %}selected{% endif %}>À vérifier</option></select></label><label>Santé<select name="health_status"><option value="">Toutes</option>{% for x in ['Bon','À surveiller','En danger','Mort'] %}<option {% if f.health_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Arrosage<select name="watering_status"><option value="">Tous</option>{% for x in ['À jour','À arroser','Urgent'] %}<option {% if f.watering_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><button class="btn">Filtrer</button><a class="btn alt" href="/trees">Effacer</a></form><div class="card" style="overflow:auto"><table><tr><th>Code</th><th>Espèce</th><th>Wilaya / Commune</th><th>Projet / Zone</th><th>Bénévole</th><th>GPS</th><th>Santé</th><th>Arrosage</th><th>Validation</th><th>Actions</th></tr>{% for t in rows %}<tr data-nav-key="tree-{{t.id}}"><td>{{t.tree_code or 'En attente'}}</td><td>{{t.species_name or t.species}}</td><td>{{t.wilaya_name}} / {{t.commune_name}}</td><td>{{t.project_name}} / {{t.zone_name}}</td><td>{{t.volunteer_name or t.planted_by}}</td><td>{% if t.latitude is not none and t.longitude is not none %}<span class="badge good">Positionné</span>{% else %}<span class="badge danger">Sans GPS</span>{% endif %}</td><td>{{t.health_status}}</td><td>{{t.watering_status}}</td><td>{{t.approval_status}}</td><td><div class="action-set"><a class="action-btn action-view" href="/tree/{{t.id}}">👁 Fiche</a><a class="action-btn action-map" href="/trees/{{t.id}}/map">🗺 Carte</a><a class="action-btn action-edit" href="/trees/{{t.id}}/edit">✏ Modifier</a>{% if admin %}<form method="post" action="/trees/{{t.id}}/delete" onsubmit="return confirm('Supprimer ou archiver cet arbre ?')"><button class="action-btn action-delete">🗑 Supprimer</button></form>{% endif %}</div></td></tr>{% else %}<tr><td colspan="10">Aucun arbre correspondant.</td></tr>{% endfor %}</table></div>''',rows=rows,f=f,admin=is_admin(),**opts)
+ return page('Arbres','''<div class="section-title"><div><h2>Liste des arbres</h2><p class="sub">Filtrez les arbres sans GPS puis lancez le positionnement rapide.</p></div><div class="action-set"><a class="action-btn action-primary" href="/planting/new">＋ Nouvel arbre</a><a class="action-btn action-map" href="/trees?gps_status=missing">📍 Sans GPS</a><a class="action-btn action-view" href="/volunteer/gps-quick">⚡ Position GPS rapide</a></div></div><form class="card toolbar"><label>Recherche<input name="q" value="{{f.q}}"></label><label>Wilaya<select name="wilaya_id"><option value="">Toutes</option>{% for x in wilayas %}<option value="{{x.id}}" {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">Toutes</option>{% for x in communes %}<option value="{{x.id}}" {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Projet<select name="project_id"><option value="">Tous</option>{% for x in projects %}<option value="{{x.id}}" {% if f.project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id"><option value="">Toutes</option>{% for x in zones %}<option value="{{x.id}}" {% if f.zone_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Espèce<select name="species_id"><option value="">Toutes</option>{% for x in species %}<option value="{{x.id}}" {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label><label>Position carte<select name="gps_status"><option value="">Toutes</option><option value="mapped" {% if f.gps_status=='mapped' %}selected{% endif %}>Avec GPS</option><option value="missing" {% if f.gps_status=='missing' %}selected{% endif %}>Sans GPS</option><option value="verify" {% if f.gps_status=='verify' %}selected{% endif %}>À vérifier</option></select></label><label>Santé<select name="health_status"><option value="">Toutes</option>{% for x in ['Bon','À surveiller','En danger','Mort'] %}<option {% if f.health_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Arrosage<select name="watering_status"><option value="">Tous</option>{% for x in ['À jour','À arroser','Urgent'] %}<option {% if f.watering_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Bénévole<select name="volunteer_id"><option value="">Tous</option>{% for x in volunteers %}<option value="{{x.id}}" {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Du<input type="date" name="date_from" value="{{f.date_from}}"></label><label>Au<input type="date" name="date_to" value="{{f.date_to}}"></label><button class="btn">Filtrer</button><a class="btn alt" href="/trees">Effacer</a></form><div class="card" style="overflow:auto"><table><tr><th>Code</th><th>Espèce</th><th>Wilaya / Commune</th><th>Projet / Zone</th><th>Bénévole</th><th>GPS</th><th>Santé</th><th>Arrosage</th><th>Validation</th><th>Actions</th></tr>{% for t in rows %}<tr data-nav-key="tree-{{t.id}}"><td>{{t.tree_code or 'En attente'}}</td><td>{{t.species_name or t.species}}</td><td>{{t.wilaya_name}} / {{t.commune_name}}</td><td>{{t.project_name}} / {{t.zone_name}}</td><td>{{t.volunteer_name or t.planted_by}}</td><td>{% if t.latitude is not none and t.longitude is not none %}<span class="badge good">Positionné</span>{% else %}<span class="badge danger">Sans GPS</span>{% endif %}</td><td>{{t.health_status}}</td><td>{{t.watering_status}}</td><td>{{t.approval_status}}</td><td><div class="action-set"><a class="action-btn action-view" href="/tree/{{t.id}}">👁 Fiche</a><a class="action-btn action-map" href="/trees/{{t.id}}/map">🗺 Carte</a><a class="action-btn action-edit" href="/trees/{{t.id}}/edit">✏ Modifier</a>{% if admin %}<form method="post" action="/trees/{{t.id}}/delete" onsubmit="return confirm('Supprimer ou archiver cet arbre ?')"><button class="action-btn action-delete">🗑 Supprimer</button></form>{% endif %}</div></td></tr>{% else %}<tr><td colspan="10">Aucun arbre correspondant.</td></tr>{% endfor %}</table></div>''',rows=rows,f=f,admin=is_admin(),**opts)
 
 @app.post('/trees/<int:tid>/delete')
 @login_required
@@ -755,6 +1078,15 @@ def planting_new():
    z=c.execute('SELECT project_id,wilaya_id,commune_id FROM zones WHERE id=? AND active=1',(zone_id,)).fetchone()
    if not z: errors.append('La zone sélectionnée est invalide.')
    elif project_id and str(z['project_id'])!=str(project_id): errors.append('La zone ne correspond pas au projet sélectionné.')
+  if project_id:
+   ok_assign,msg_assign,p0,z0=validate_tree_assignment(c,project_id,zone_id)
+   if not ok_assign: errors.append(msg_assign)
+   elif p0:
+    # A project/zone assignment always carries the project's geography.
+    wilaya_id=p0['wilaya_id']; commune_id=p0['commune_id']
+    if current_association_id() and p0['association_id'] and int(current_association_id())!=int(p0['association_id']):
+     can_partner=collaboration_access(c,project_id,current_association_id(),'can_add_tree')
+     if not can_partner: errors.append('Cette association partenaire n’est pas autorisée à ajouter des arbres à ce projet.')
   if errors:
    for e in errors: flash(e)
   else:
@@ -812,9 +1144,14 @@ def tree_edit(tid):
  c=db(); opts=filter_options(c); t=c.execute('SELECT * FROM trees WHERE id=?',(tid,)).fetchone()
  if not t: c.close(); return redirect('/trees')
  if request.method=='POST':
-  changes={'species_id':request.form['species_id'],'project_id':request.form.get('project_id') or None,'zone_id':request.form.get('zone_id') or None,'health_status':request.form['health_status'],'watering_status':request.form['watering_status'],'latitude':request.form.get('latitude') or None,'longitude':request.form.get('longitude') or None,'notes':request.form.get('notes')}
+  new_project=request.form.get('project_id') or None; new_zone=request.form.get('zone_id') or None
+  if new_project:
+   ok_assign,msg_assign,p0,z0=validate_tree_assignment(c,new_project,new_zone,tid)
+   if not ok_assign: flash(msg_assign); c.close(); return redirect('/trees/'+str(tid)+'/edit')
+  else: p0=z0=None
+  changes={'species_id':request.form['species_id'],'project_id':new_project,'zone_id':new_zone,'health_status':request.form['health_status'],'watering_status':request.form['watering_status'],'latitude':request.form.get('latitude') or None,'longitude':request.form.get('longitude') or None,'notes':request.form.get('notes')}
   if is_admin() or t['approval_status']!='approved':
-   c.execute('UPDATE trees SET species_id=?,project_id=?,zone_id=?,health_status=?,watering_status=?,latitude=?,longitude=?,notes=? WHERE id=?',(changes['species_id'],changes['project_id'],changes['zone_id'],changes['health_status'],changes['watering_status'],changes['latitude'],changes['longitude'],changes['notes'],tid)); c.commit(); c.close(); log_action('edit','tree',tid); flash('Fiche arbre modifiée.'); return redirect('/tree/'+str(tid))
+   c.execute('UPDATE trees SET species_id=?,project_id=?,zone_id=?,wilaya_id=?,commune_id=?,association_id=?,health_status=?,watering_status=?,latitude=?,longitude=?,notes=? WHERE id=?',(changes['species_id'],changes['project_id'],changes['zone_id'],p0['wilaya_id'] if p0 else t['wilaya_id'],p0['commune_id'] if p0 else t['commune_id'],p0['association_id'] if p0 else t['association_id'],changes['health_status'],changes['watering_status'],changes['latitude'],changes['longitude'],changes['notes'],tid)); c.commit(); c.close(); log_action('edit','tree',tid); flash('Fiche arbre modifiée avec cohérence Projet → Zone → localisation.'); return redirect('/tree/'+str(tid))
   if t['planted_by_user_id']!=session.get('uid'):
    c.close(); flash('Vous ne pouvez proposer une correction que pour vos propres arbres.'); return redirect('/tree/'+str(tid))
   now=datetime.now().isoformat(timespec='minutes'); reason=clean(request.form.get('change_reason')) or 'Correction demandée par le bénévole'; c.execute("INSERT INTO tree_change_requests(tree_id,requested_by_user_id,changes_json,reason,status,created_at) VALUES(?,?,?,?,'pending',?)",(tid,session['uid'],json.dumps(changes,ensure_ascii=False),reason,now)); rid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']; admins=c.execute("SELECT u.id FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.active=1 AND COALESCE(r.name,u.role) IN ('super_admin','admin')").fetchall();
@@ -1046,8 +1383,10 @@ def project_new():
  if request.method=='POST':
   code=clean(request.form.get('code')) or suggested; name=request.form['name'].strip(); errors=[]
   if c.execute('SELECT id FROM projects WHERE code=?',(code,)).fetchone(): errors.append('Ce code projet existe déjà.')
+  wid=request.form.get('wilaya_id') or None; cid=request.form.get('commune_id') or None
+  if cid and (not wid or not c.execute('SELECT 1 FROM communes WHERE id=? AND wilaya_id=?',(cid,wid)).fetchone()): errors.append('La commune ne correspond pas à la wilaya sélectionnée.')
   if not errors:
-   now=datetime.now().isoformat(timespec='minutes'); cur=c.execute('INSERT INTO projects(code,name,status,target_trees,budget,wilaya_id,commune_id,location,manager_user_id,active,description,start_date,end_date,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)',(code,name,request.form.get('status') or 'Brouillon',request.form.get('target_trees') or 0,request.form.get('budget') or 0,request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,request.form.get('location'),request.form.get('manager_user_id') or None,request.form.get('description'),request.form.get('start_date') or None,request.form.get('end_date') or None,now,now,current_association_id())); c.commit(); pid=cur.lastrowid; c.close(); log_action('create','project',pid,name); flash('Projet créé.'); return redirect('/projects/'+str(pid))
+   now=datetime.now().isoformat(timespec='minutes'); cur=c.execute('INSERT INTO projects(code,name,status,target_trees,budget,wilaya_id,commune_id,location,manager_user_id,active,description,start_date,end_date,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)',(code,name,request.form.get('status') or 'Brouillon',request.form.get('target_trees') or 0,request.form.get('budget') or 0,wid,cid,request.form.get('location'),request.form.get('manager_user_id') or None,request.form.get('description'),request.form.get('start_date') or None,request.form.get('end_date') or None,now,now,current_association_id())); c.commit(); pid=cur.lastrowid; c.close(); log_action('create','project',pid,name); flash('Projet créé.'); return redirect('/projects/'+str(pid))
   for e in errors: flash(e)
  c.close(); return page('Nouveau projet',PROJECT_FORM,p=None,managers=managers,cancel_url='/projects',suggested_code=suggested,**opts)
 
@@ -1067,10 +1406,20 @@ def project_edit(pid):
  c=db(); p=c.execute('SELECT * FROM projects WHERE id=?',(pid,)).fetchone(); opts=filter_options(c); managers=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall()
  if not p: c.close(); return ('Introuvable',404)
  if request.method=='POST':
-  code=request.form['code'].strip(); duplicate=c.execute('SELECT id FROM projects WHERE code=? AND id<>?',(code,pid)).fetchone()
+  code=request.form['code'].strip(); duplicate=c.execute('SELECT id FROM projects WHERE code=? AND id<>?',(code,pid)).fetchone(); target=int(request.form.get('target_trees') or 0)
+  ok_target,allocated,planted=validate_project_target(c,pid,target)
+  wid=request.form.get('wilaya_id') or None; cid=request.form.get('commune_id') or None
+  geo_ok=(not cid) or (wid and c.execute('SELECT 1 FROM communes WHERE id=? AND wilaya_id=?',(cid,wid)).fetchone())
   if duplicate: flash('Ce code projet existe déjà.')
+  elif not geo_ok: flash('La commune ne correspond pas à la wilaya sélectionnée.')
+  elif not ok_target: flash(f'Objectif impossible : {allocated} arbre(s) sont déjà répartis dans les zones et {planted} plantation(s) sont rattachées au projet.')
   else:
-   c.execute('UPDATE projects SET code=?,name=?,status=?,target_trees=?,budget=?,wilaya_id=?,commune_id=?,location=?,manager_user_id=?,active=?,description=?,start_date=?,end_date=?,updated_at=? WHERE id=?',(code,request.form['name'].strip(),request.form.get('status'),request.form.get('target_trees') or 0,request.form.get('budget') or 0,request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,request.form.get('location'),request.form.get('manager_user_id') or None,request.form.get('active',1),request.form.get('description'),request.form.get('start_date') or None,request.form.get('end_date') or None,datetime.now().isoformat(timespec='minutes'),pid)); c.commit(); c.close(); log_action('edit','project',pid); flash('Projet modifié.'); return redirect('/projects/'+str(pid))
+   geo_changed=str(p['wilaya_id'] or '')!=str(wid or '') or str(p['commune_id'] or '')!=str(cid or '')
+   c.execute('UPDATE projects SET code=?,name=?,status=?,target_trees=?,budget=?,wilaya_id=?,commune_id=?,location=?,manager_user_id=?,active=?,description=?,start_date=?,end_date=?,updated_at=? WHERE id=?',(code,request.form['name'].strip(),request.form.get('status'),target,request.form.get('budget') or 0,wid,cid,request.form.get('location'),request.form.get('manager_user_id') or None,request.form.get('active',1),request.form.get('description'),request.form.get('start_date') or None,request.form.get('end_date') or None,datetime.now().isoformat(timespec='minutes'),pid))
+   if geo_changed:
+    c.execute('UPDATE zones SET wilaya_id=?,commune_id=?,updated_at=? WHERE project_id=?',(wid,cid,datetime.now().isoformat(timespec='minutes'),pid))
+    c.execute('UPDATE trees SET wilaya_id=?,commune_id=? WHERE project_id=?',(wid,cid,pid))
+   c.commit(); c.close(); log_action('edit','project',pid,'geo cascade' if geo_changed else ''); flash('Projet modifié.'+(' La localisation a été répercutée sur ses zones et arbres.' if geo_changed else '')); return redirect('/projects/'+str(pid))
  c.close(); return page('Modifier projet',PROJECT_FORM,p=p,managers=managers,cancel_url='/projects/'+str(pid),suggested_code=p['code'],**opts)
 
 @app.post('/projects/<int:pid>/archive')
@@ -1089,19 +1438,23 @@ def project_duplicate(pid):
  if not p: c.close(); return redirect('/projects')
  base=p['code']+'-COPIE'; code=base; i=2
  while c.execute('SELECT id FROM projects WHERE code=?',(code,)).fetchone(): code=f'{base}-{i}'; i+=1
- now=datetime.now().isoformat(timespec='minutes'); cur=c.execute('INSERT INTO projects(code,name,status,target_trees,budget,wilaya_id,commune_id,location,manager_user_id,active,description,start_date,end_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)',(code,p['name']+' (copie)','Brouillon',p['target_trees'],p['budget'],p['wilaya_id'],p['commune_id'],p['location'],p['manager_user_id'],p['description'],p['start_date'],p['end_date'],now,now)); c.commit(); nid=cur.lastrowid; c.close(); log_action('duplicate','project',nid); flash('Projet dupliqué.'); return redirect('/projects/'+str(nid))
+ now=datetime.now().isoformat(timespec='minutes'); cur=c.execute('INSERT INTO projects(code,name,status,target_trees,budget,wilaya_id,commune_id,location,manager_user_id,active,description,start_date,end_date,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)',(code,p['name']+' (copie)','Brouillon',p['target_trees'],p['budget'],p['wilaya_id'],p['commune_id'],p['location'],p['manager_user_id'],p['description'],p['start_date'],p['end_date'],now,now,p['association_id'])); c.commit(); nid=cur.lastrowid; c.close(); log_action('duplicate','project',nid); flash('Projet dupliqué dans la même association.'); return redirect('/projects/'+str(nid))
 
 @app.route('/api/projects/<int:pid>/defaults')
 @login_required
 def api_project_defaults(pid):
- c=db(); p=c.execute('SELECT id,wilaya_id,commune_id,target_trees FROM projects WHERE id=? AND active=1',(pid,)).fetchone(); allocated=c.execute('SELECT COALESCE(SUM(target_trees),0) n FROM zones WHERE project_id=? AND active=1',(pid,)).fetchone()['n'] if p else 0; c.close()
+ c=db(); allowed={int(x['id']) for x in accessible_filter_projects(c,active_context(c))}
+ if pid not in allowed: c.close(); return jsonify({'error':'forbidden_project'}),403
+ p=c.execute('SELECT id,wilaya_id,commune_id,target_trees FROM projects WHERE id=? AND active=1',(pid,)).fetchone(); allocated=c.execute('SELECT COALESCE(SUM(target_trees),0) n FROM zones WHERE project_id=? AND active=1',(pid,)).fetchone()['n'] if p else 0; c.close()
  if not p:return jsonify({'error':'not_found'}),404
  return jsonify({'wilaya_id':p['wilaya_id'],'commune_id':p['commune_id'],'target_trees':p['target_trees'] or 0,'allocated':allocated,'remaining':max(0,(p['target_trees'] or 0)-allocated)})
 
 @app.route('/api/projects/<int:pid>/zones')
 @login_required
 def api_project_zones(pid):
- c=db(); scope,sp=context_condition('zones'); rows=c.execute('SELECT id,name FROM zones WHERE project_id=? AND active=1 AND '+scope+' ORDER BY name',[pid]+sp).fetchall(); c.close(); return jsonify([dict(x) for x in rows])
+ c=db(); allowed={int(x['id']) for x in accessible_filter_projects(c,active_context(c))}
+ if pid not in allowed: c.close(); return jsonify({'error':'forbidden_project'}),403
+ rows=c.execute('SELECT id,name FROM zones WHERE project_id=? AND active=1 ORDER BY name',(pid,)).fetchall(); c.close(); return jsonify([dict(x) for x in rows])
 
 @app.route('/api/teams/<int:tid>/leader')
 @login_required
@@ -1122,10 +1475,10 @@ def zones_page():
  ps,pp=context_condition('projects'); projects=c.execute('SELECT id,name FROM projects WHERE active=1 AND '+ps+' ORDER BY name',pp).fetchall(); wilayas=c.execute('SELECT id,name FROM wilayas WHERE active=1 ORDER BY name').fetchall(); communes=c.execute('SELECT id,name FROM communes WHERE active=1 ORDER BY name').fetchall(); managers=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall(); c.close()
  return page('Zones',"""<div class="section-title"><h2>Zones</h2>{% if admin %}<a class="btn" href="/zones/new">+ Nouvelle zone</a>{% endif %}</div><form class="card toolbar"><label>Recherche<input name="q" value="{{q}}" placeholder="Nom, code ou description"></label><label>Projet<select name="project_id"><option value="">Tous</option>{% for x in projects %}<option value="{{x.id}}" {% if project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Wilaya<select name="wilaya_id"><option value="">Toutes</option>{% for x in wilayas %}<option value="{{x.id}}" {% if wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">Toutes</option>{% for x in communes %}<option value="{{x.id}}" {% if commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Responsable<select name="manager_id"><option value="">Tous</option>{% for x in managers %}<option value="{{x.id}}" {% if manager_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>État<select name="active"><option value="">Tous</option><option value="1" {% if active=='1' %}selected{% endif %}>Actives</option><option value="0" {% if active=='0' %}selected{% endif %}>Archivées</option></select></label><button class="btn">Filtrer</button><a class="btn alt" href="/zones">Annuler les filtres</a></form><div class="card" style="overflow:auto"><table><tr><th>Zone</th><th>Projet</th><th>Responsable</th><th>Wilaya / Commune</th><th>Superficie</th><th>Arbres</th><th>Priorités</th><th>Équipes</th><th>État</th><th>Actions</th></tr>{% for z in rows %}<tr><td><a href="/zones/{{z.id}}"><b>{{z.name}}</b></a><div class="sub">{{z.code or 'Sans code'}}</div></td><td>{{z.project_name or '—'}}</td><td>{{z.manager_name or '—'}}</td><td>{{z.wilaya_name or '—'}} / {{z.commune_name or '—'}}</td><td>{{z.area or 0}} ha</td><td>{{z.tree_count}} / {{z.target_trees or 0}}</td><td><span class="badge {% if z.priority_count %}danger{% else %}good{% endif %}">{{z.priority_count}}</span></td><td>{{z.team_count}}</td><td><span class="badge {% if z.active %}good{% else %}danger{% endif %}">{{'Active' if z.active else 'Archivée'}}</span></td><td><a class="btn alt" href="/zones/{{z.id}}">Fiche</a>{% if admin %} <a class="btn alt" href="/zones/{{z.id}}/edit">Modifier</a> <form method="post" action="/zones/{{z.id}}/delete" style="display:inline" onsubmit="return confirm('Supprimer ou archiver cette zone ?')"><button class="btn red">Supprimer</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="10">Aucune zone ne correspond aux filtres.</td></tr>{% endfor %}</table></div>""",rows=rows,projects=projects,wilayas=wilayas,communes=communes,managers=managers,q=q,project_id=project_id,wilaya_id=wilaya_id,commune_id=commune_id,manager_id=manager_id,active=active,admin=is_admin())
 
-ZONE_FORM="""<div class="card"><form method="post" class="form" id="zoneForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Projet<select name="project_id" id="zoneProject" required><option value="">—</option>{% set pid=request.form.get('project_id',z.project_id if z else '') %}{% for x in projects %}<option value="{{x.id}}" {% if pid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select><span class="sub" id="zoneRemaining"></span></label><label>Code<input name="code" value="{{request.form.get('code',z.code if z and z.code else suggested_code)}}" readonly></label><label>Nom<input name="name" value="{{request.form.get('name',z.name if z else '')}}" required></label><label>Responsable<select name="manager_user_id"><option value="">—</option>{% set mid=request.form.get('manager_user_id',z.manager_user_id if z else '') %}{% for x in managers %}<option value="{{x.id}}" {% if mid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Wilaya<select name="wilaya_id" id="zoneWilaya"><option value="">—</option>{% set wid=request.form.get('wilaya_id',z.wilaya_id if z else '') %}{% for x in wilayas %}<option value="{{x.id}}" {% if wid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id" id="zoneCommune"><option value="">—</option>{% set cid=request.form.get('commune_id',z.commune_id if z else '') %}{% for x in communes %}<option value="{{x.id}}" {% if cid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Superficie (ha)<input type="number" step="0.01" min="0" name="area" value="{{request.form.get('area',z.area if z else 0)}}"></label><label>Objectif arbres<input type="number" min="0" name="target_trees" id="zoneTarget" value="{{request.form.get('target_trees',z.target_trees if z else 0)}}"></label><label>Latitude<input id="zoneLat" type="number" step="any" name="latitude" value="{{request.form.get('latitude',z.latitude if z and z.latitude is not none else '')}}"></label><label>Longitude<input id="zoneLon" type="number" step="any" name="longitude" value="{{request.form.get('longitude',z.longitude if z and z.longitude is not none else '')}}"></label><div class="full">{{location_picker|safe}}</div><label>Couleur<input type="color" name="color" value="{{request.form.get('color',z.color if z and z.color else '#3a7d44')}}"></label>{% if z %}<label>État<select name="active"><option value="1" {% if request.form.get('active',z.active)|string=='1' %}selected{% endif %}>Active</option><option value="0" {% if request.form.get('active',z.active)|string=='0' %}selected{% endif %}>Archivée</option></select></label>{% endif %}<label class="full">Description<textarea name="description">{{request.form.get('description',z.description if z and z.description else '')}}</textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="{{cancel_url}}">Annuler</a></div></form></div><script>
+ZONE_FORM="""<div class="card"><form method="post" class="form" id="zoneForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Projet<select name="project_id" id="zoneProject" required><option value="">—</option>{% set pid=request.form.get('project_id',z.project_id if z else '') %}{% for x in projects %}<option value="{{x.id}}" {% if pid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select><span class="sub" id="zoneRemaining"></span></label><label>Code<input name="code" value="{{request.form.get('code',z.code if z and z.code else suggested_code)}}" readonly></label><label>Nom<input name="name" value="{{request.form.get('name',z.name if z else '')}}" required></label><label>Responsable<select name="manager_user_id"><option value="">—</option>{% set mid=request.form.get('manager_user_id',z.manager_user_id if z else '') %}{% for x in managers %}<option value="{{x.id}}" {% if mid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Wilaya <span class="sub">(héritée du projet)</span><select name="wilaya_id" id="zoneWilaya" disabled><option value="">—</option>{% set wid=request.form.get('wilaya_id',z.wilaya_id if z else '') %}{% for x in wilayas %}<option value="{{x.id}}" {% if wid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune <span class="sub">(héritée du projet)</span><select name="commune_id" id="zoneCommune" disabled><option value="">—</option>{% set cid=request.form.get('commune_id',z.commune_id if z else '') %}{% for x in communes %}<option value="{{x.id}}" {% if cid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Superficie (ha)<input type="number" step="0.01" min="0" name="area" value="{{request.form.get('area',z.area if z else 0)}}"></label><label>Objectif arbres<input type="number" min="0" name="target_trees" id="zoneTarget" value="{{request.form.get('target_trees',z.target_trees if z else 0)}}"></label><label>Latitude<input id="zoneLat" type="number" step="any" name="latitude" value="{{request.form.get('latitude',z.latitude if z and z.latitude is not none else '')}}"></label><label>Longitude<input id="zoneLon" type="number" step="any" name="longitude" value="{{request.form.get('longitude',z.longitude if z and z.longitude is not none else '')}}"></label><div class="full">{{location_picker|safe}}</div><label>Couleur<input type="color" name="color" value="{{request.form.get('color',z.color if z and z.color else '#3a7d44')}}"></label>{% if z %}<label>État<select name="active"><option value="1" {% if request.form.get('active',z.active)|string=='1' %}selected{% endif %}>Active</option><option value="0" {% if request.form.get('active',z.active)|string=='0' %}selected{% endif %}>Archivée</option></select></label>{% endif %}<label class="full">Description<textarea name="description">{{request.form.get('description',z.description if z and z.description else '')}}</textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="{{cancel_url}}">Annuler</a></div></form></div><script>
 async function zoneProjectChanged(){let p=zoneProject.value;if(!p)return;let d=await fetch('/api/projects/'+p+'/defaults').then(r=>r.json());zoneWilaya.value=d.wilaya_id||'';await loadZoneCommunes(d.commune_id);zoneRemaining.textContent='Reste à répartir : '+d.remaining+' arbre(s)';}
 async function loadZoneCommunes(selected){let w=zoneWilaya.value;zoneCommune.innerHTML='<option value="">—</option>';if(!w)return;let rows=await fetch('/api/communes/'+w).then(r=>r.json());rows.forEach(x=>{let o=new Option(x.name+(x.name_ar?' — '+x.name_ar:''),x.id);if(String(x.id)==String(selected))o.selected=true;zoneCommune.add(o)})}
-zoneProject.addEventListener('change',zoneProjectChanged);zoneWilaya.addEventListener('change',()=>loadZoneCommunes(null));if(zoneProject.value){fetch('/api/projects/'+zoneProject.value+'/defaults').then(r=>r.json()).then(d=>{zoneRemaining.textContent='Reste à répartir : '+d.remaining+' arbre(s)'})}
+zoneProject.addEventListener('change',zoneProjectChanged);if(zoneProject.value){fetch('/api/projects/'+zoneProject.value+'/defaults').then(r=>r.json()).then(d=>{zoneRemaining.textContent='Reste à répartir : '+d.remaining+' arbre(s)'})}
 </script>"""
 
 @app.route('/zones/new',methods=['GET','POST'])
@@ -1134,11 +1487,14 @@ def zone_new():
  if not is_admin(): return redirect('/zones')
  c=db(); opts=filter_options(c); managers=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall(); suggested=next_entity_code(c,'zones','code','ZONE')
  if request.method=='POST':
-  target=int(request.form.get('target_trees') or 0); ok,remaining=validate_zone_target(c,request.form['project_id'],target)
+  project_id=request.form.get('project_id'); allowed,p0=project_owner_allowed(c,project_id,'zone.create')
+  target=int(request.form.get('target_trees') or 0); ok,remaining=validate_zone_target(c,project_id,target)
+  if not allowed:
+   c.close(); return ('Seule l’association propriétaire du projet peut créer une zone.',403)
   if not ok:
    flash('Objectif impossible : les zones dépasseraient l’objectif du projet. Reste disponible : '+str(remaining)+' arbre(s).'); c.close(); return page('Nouvelle zone',ZONE_FORM,z=None,managers=managers,cancel_url='/zones',suggested_code=suggested,location_picker=location_picker_markup('zone'),**opts)
-  p0=c.execute('SELECT wilaya_id,commune_id FROM projects WHERE id=?',(request.form['project_id'],)).fetchone(); now=datetime.now().isoformat(timespec='minutes'); code=clean(request.form.get('code')) or suggested
-  cur=c.execute('INSERT INTO zones(project_id,wilaya_id,commune_id,code,name,area,target_trees,color,manager_user_id,active,description,latitude,longitude,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)',(request.form['project_id'],request.form.get('wilaya_id') or (p0['wilaya_id'] if p0 else None),request.form.get('commune_id') or (p0['commune_id'] if p0 else None),code,request.form['name'].strip(),request.form.get('area') or 0,target,request.form.get('color') or '#3a7d44',request.form.get('manager_user_id') or None,request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,now,now)); c.commit(); zid=cur.lastrowid; c.close(); log_action('create','zone',zid); flash('Zone créée. Reste du projet après cette zone : '+str(remaining)+' arbre(s).'); return redirect('/zones/'+str(zid))
+  now=datetime.now().isoformat(timespec='minutes'); code=clean(request.form.get('code')) or suggested
+  cur=c.execute('INSERT INTO zones(project_id,wilaya_id,commune_id,code,name,area,target_trees,color,manager_user_id,active,description,latitude,longitude,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)',(project_id,p0['wilaya_id'],p0['commune_id'],code,request.form['name'].strip(),request.form.get('area') or 0,target,request.form.get('color') or '#3a7d44',request.form.get('manager_user_id') or None,request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,now,now,p0['association_id'])); c.commit(); zid=cur.lastrowid; c.close(); log_action('create','zone',zid); flash('Zone créée avec la wilaya et la commune du projet. Reste du projet : '+str(remaining)+' arbre(s).'); return redirect('/zones/'+str(zid))
  c.close(); return page('Nouvelle zone',ZONE_FORM,z=None,managers=managers,cancel_url='/zones',suggested_code=suggested,location_picker=location_picker_markup('zone'),**opts)
 
 @app.route('/zones/<int:zid>')
@@ -1162,10 +1518,16 @@ def zone_edit(zid):
  c=db(); z=c.execute('SELECT * FROM zones WHERE id=?',(zid,)).fetchone(); opts=filter_options(c); managers=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall()
  if not z: c.close(); return ('Introuvable',404)
  if request.method=='POST':
-  target=int(request.form.get('target_trees') or 0); ok,remaining=validate_zone_target(c,request.form['project_id'],target,zid)
+  project_id=request.form.get('project_id'); allowed,p0=project_owner_allowed(c,project_id,'zone.update'); target=int(request.form.get('target_trees') or 0); ok,remaining=validate_zone_target(c,project_id,target,zid)
+  tree_count=c.execute("SELECT COUNT(*) n FROM trees WHERE zone_id=? AND active=1 AND COALESCE(approval_status,'approved')<>'rejected'",(zid,)).fetchone()['n'] or 0
+  if not allowed: c.close(); return ('Seule l’association propriétaire du projet peut modifier cette zone.',403)
+  if int(project_id)!=int(z['project_id']) and tree_count:
+   flash('Impossible de déplacer cette zone vers un autre projet : elle contient déjà '+str(tree_count)+' arbre(s).'); c.close(); return page('Modifier zone',ZONE_FORM,z=z,managers=managers,cancel_url='/zones/'+str(zid),suggested_code=z['code'] or '',location_picker=location_picker_markup('zone'),**opts)
+  if target>0 and target<tree_count:
+   flash('Objectif impossible : la zone contient déjà '+str(tree_count)+' arbre(s).'); c.close(); return page('Modifier zone',ZONE_FORM,z=z,managers=managers,cancel_url='/zones/'+str(zid),suggested_code=z['code'] or '',location_picker=location_picker_markup('zone'),**opts)
   if not ok:
    flash('Objectif impossible : les zones dépasseraient l’objectif du projet. Reste disponible hors cette zone : '+str(remaining)+' arbre(s).'); c.close(); return page('Modifier zone',ZONE_FORM,z=z,managers=managers,cancel_url='/zones/'+str(zid),suggested_code=z['code'] or '',location_picker=location_picker_markup('zone'),**opts)
-  c.execute('UPDATE zones SET project_id=?,wilaya_id=?,commune_id=?,code=?,name=?,area=?,target_trees=?,color=?,manager_user_id=?,active=?,description=?,latitude=?,longitude=?,updated_at=? WHERE id=?',(request.form['project_id'],request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,request.form.get('code'),request.form['name'].strip(),request.form.get('area') or 0,target,request.form.get('color') or '#3a7d44',request.form.get('manager_user_id') or None,request.form.get('active',1),request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,datetime.now().isoformat(timespec='minutes'),zid)); c.commit(); c.close(); log_action('edit','zone',zid); flash('Zone modifiée.'); return redirect('/zones/'+str(zid))
+  c.execute('UPDATE zones SET project_id=?,wilaya_id=?,commune_id=?,association_id=?,code=?,name=?,area=?,target_trees=?,color=?,manager_user_id=?,active=?,description=?,latitude=?,longitude=?,updated_at=? WHERE id=?',(project_id,p0['wilaya_id'],p0['commune_id'],p0['association_id'],request.form.get('code'),request.form['name'].strip(),request.form.get('area') or 0,target,request.form.get('color') or '#3a7d44',request.form.get('manager_user_id') or None,request.form.get('active',1),request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,datetime.now().isoformat(timespec='minutes'),zid)); c.commit(); c.close(); log_action('edit','zone',zid); flash('Zone modifiée. Wilaya et commune synchronisées avec le projet.'); return redirect('/zones/'+str(zid))
  c.close(); return page('Modifier zone',ZONE_FORM,z=z,managers=managers,cancel_url='/zones/'+str(zid),suggested_code=z['code'] or '',location_picker=location_picker_markup('zone'),**opts)
 
 @app.post('/zones/<int:zid>/archive')
@@ -1296,23 +1658,109 @@ def api_trees():
  WHERE """+where+" AND t.approval_status='approved' AND t.latitude IS NOT NULL AND t.longitude IS NOT NULL ORDER BY t.id DESC",params).fetchall(); c.close()
  return jsonify([dict(x) for x in rows])
 
+# --- MyTree Professional v2.0 Alpha 4 Lot 5 : carte commune multi-associations ---
+def accessible_map_projects(c,ctx):
+ """Projects visible in the current context, including accepted read-only collaborations."""
+ if ctx.get('type')=='global' and is_super_admin():
+  return c.execute("SELECT p.*,a.name association_name,a.map_symbol association_symbol,0 collaborative FROM projects p LEFT JOIN associations a ON a.id=p.association_id WHERE p.active=1 ORDER BY p.name").fetchall()
+ if ctx.get('type')=='association' and ctx.get('association_id'):
+  aid=ctx['association_id']
+  return c.execute("""SELECT DISTINCT p.*,a.name association_name,a.map_symbol association_symbol,
+   CASE WHEN p.association_id=? THEN 0 ELSE 1 END collaborative
+   FROM projects p LEFT JOIN associations a ON a.id=p.association_id
+   LEFT JOIN association_collaborations ac ON ac.project_id=p.id AND ac.invited_association_id=? AND ac.status='accepted' AND ac.can_view=1
+   WHERE p.active=1 AND (p.association_id=? OR ac.id IS NOT NULL) ORDER BY collaborative,p.name""",(aid,aid,aid)).fetchall()
+ return []
+
+def map_resource_allowed(c,ctx,association_id=None,project_id=None):
+ if ctx.get('type')=='global' and is_super_admin(): return True
+ if ctx.get('type')=='personal': return association_id is None
+ aid=ctx.get('association_id')
+ if not aid: return False
+ if association_id is not None and int(association_id or 0)==int(aid): return True
+ if project_id:
+  return collaboration_access(c,project_id,aid,'can_view')
+ return False
+
+@app.route('/api/map-data')
+@login_required
+def api_map_data():
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ ctx=active_context(c); uid=session.get('uid'); types=set(request.args.getlist('type')) or {'tree','project','zone','event','mission'}
+ projects=list(accessible_filter_projects(c,ctx)); project_ids={int(x['id']) for x in projects}; data=[]
+ def add(kind,row,title,subtitle='',url=''):
+  if row['latitude'] is None or row['longitude'] is None: return
+  data.append({'type':kind,'id':row['id'],'lat':row['latitude'],'lon':row['longitude'],'title':title,'subtitle':subtitle,'url':url,'association_id':row['association_id'] if 'association_id' in row.keys() else None,'project_id':row['project_id'] if 'project_id' in row.keys() else None})
+ if 'tree' in types:
+  where,args=tree_where(f)
+  q="""SELECT t.*,s.name_fr species_name,p.name project_name,z.name zone_name,a.name association_name,a.map_symbol association_symbol FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN users u ON u.id=t.planted_by_user_id LEFT JOIN associations a ON a.id=t.association_id WHERE """+where+" AND t.approval_status='approved' AND t.latitude IS NOT NULL AND t.longitude IS NOT NULL"
+  for r in c.execute(q,args).fetchall():
+   if map_resource_allowed(c,ctx,r['association_id'],r['project_id']): add('tree',r,r['tree_code'] or 'Arbre',(r['species_name'] or r['species'] or '')+' · '+(r['project_name'] or 'Hors projet'),'/tree/'+str(r['id']))
+ if ctx.get('type')!='personal' and project_ids:
+  marks=','.join('?'*len(project_ids))
+  if 'project' in types:
+   for r in projects:
+    if f['project_id'] and str(r['id'])!=str(f['project_id']): continue
+    if f['wilaya_id'] and str(r['wilaya_id'] or '')!=str(f['wilaya_id']): continue
+    if f['commune_id'] and str(r['commune_id'] or '')!=str(f['commune_id']): continue
+    add('project',r,r['name'],'Projet'+(' · collaboration' if r['collaborative'] else ''),'/projects/'+str(r['id']))
+  if 'zone' in types:
+   q=f"SELECT z.*,p.name project_name,p.wilaya_id project_wilaya_id,p.commune_id project_commune_id FROM zones z LEFT JOIN projects p ON p.id=z.project_id WHERE z.active=1 AND z.project_id IN ({marks}) AND z.latitude IS NOT NULL AND z.longitude IS NOT NULL"; args=list(sorted(project_ids))
+   if f['project_id']: q+=' AND z.project_id=?'; args.append(f['project_id'])
+   if f['zone_id']: q+=' AND z.id=?'; args.append(f['zone_id'])
+   if f['wilaya_id']: q+=' AND COALESCE(z.wilaya_id,p.wilaya_id)=?'; args.append(f['wilaya_id'])
+   if f['commune_id']: q+=' AND COALESCE(z.commune_id,p.commune_id)=?'; args.append(f['commune_id'])
+   for r in c.execute(q,args).fetchall(): add('zone',r,r['name'],'Zone · '+(r['project_name'] or ''),'/zones/'+str(r['id']))
+  if 'event' in types:
+   q=f"SELECT e.*,p.name project_name FROM events e LEFT JOIN projects p ON p.id=e.project_id WHERE e.active=1 AND e.project_id IN ({marks}) AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL"; args=list(sorted(project_ids))
+   if f['project_id']: q+=' AND e.project_id=?'; args.append(f['project_id'])
+   if f['zone_id']: q+=' AND e.zone_id=?'; args.append(f['zone_id'])
+   if f['status']: q+=' AND e.status=?'; args.append(f['status'])
+   if f['action_type']: q+=' AND e.event_type=?'; args.append(f['action_type'])
+   if f['date_from']: q+=' AND date(e.start_at)>=date(?)'; args.append(f['date_from'])
+   if f['date_to']: q+=' AND date(e.start_at)<=date(?)'; args.append(f['date_to'])
+   if f['wilaya_id']: q+=' AND p.wilaya_id=?'; args.append(f['wilaya_id'])
+   if f['commune_id']: q+=' AND p.commune_id=?'; args.append(f['commune_id'])
+   for r in c.execute(q,args).fetchall(): add('event',r,r['title'],'Événement · '+(r['project_name'] or ''),'/events/'+str(r['id']))
+  if 'mission' in types:
+   q=f"SELECT m.*,p.name project_name FROM missions m LEFT JOIN projects p ON p.id=m.project_id WHERE m.active=1 AND m.project_id IN ({marks}) AND m.latitude IS NOT NULL AND m.longitude IS NOT NULL"; args=list(sorted(project_ids))
+   if f['project_id']: q+=' AND m.project_id=?'; args.append(f['project_id'])
+   if f['zone_id']: q+=' AND m.zone_id=?'; args.append(f['zone_id'])
+   if f['status']: q+=' AND m.status=?'; args.append(f['status'])
+   if f['priority']: q+=' AND m.priority=?'; args.append(f['priority'])
+   if f['action_type']: q+=' AND m.mission_type=?'; args.append(f['action_type'])
+   if f['volunteer_id']: q+=' AND (m.leader_user_id=? OR EXISTS(SELECT 1 FROM mission_participants mp WHERE mp.mission_id=m.id AND mp.user_id=?))'; args += [f['volunteer_id'],f['volunteer_id']]
+   if f['date_from']: q+=' AND date(m.start_at)>=date(?)'; args.append(f['date_from'])
+   if f['date_to']: q+=' AND date(m.start_at)<=date(?)'; args.append(f['date_to'])
+   if f['wilaya_id']: q+=' AND p.wilaya_id=?'; args.append(f['wilaya_id'])
+   if f['commune_id']: q+=' AND p.commune_id=?'; args.append(f['commune_id'])
+   for r in c.execute(q,args).fetchall(): add('mission',r,r['title'],'Mission · '+(r['project_name'] or ''),'/missions/'+str(r['id']))
+ c.close(); return jsonify({'context':ctx,'filters':f,'items':data})
+
 @app.route('/map')
 @login_required
 def real_map():
- f=filters_from_request(); c=db(); opts=filter_options(c); assocs=association_options(c); volunteers=c.execute("SELECT id,name FROM users WHERE active=1 ORDER BY name").fetchall(); c.close()
- return page('Carte réelle des arbres',"""<div class="filter-quick card noprint"><a class="btn alt" href="/map">Tous</a><a class="btn alt" href="/map?quick=mine">Mes arbres</a><a class="btn alt" href="/map?quick=individuals">Individuels</a><a class="btn alt" href="/map?quick=associations">Associations</a><a class="btn alt" href="/map?quick=watering">À arroser</a><button type="button" class="btn" onclick="document.getElementById('advancedFilters').classList.toggle('open')">⚙️ Plus de filtres{% if active_count %} ({{active_count}}){% endif %}</button></div>
- <form id="advancedFilters" class="filter-panel card noprint" method="get"><input type="hidden" name="quick" value="{{f.quick}}"><h3>⚙️ Plus de filtres</h3><div class="form">
- <label>Type<select name="owner_type"><option value="">Tous</option><option value="individual" {% if f.owner_type=='individual' %}selected{% endif %}>Individuels</option><option value="association" {% if f.owner_type=='association' %}selected{% endif %}>Associations</option></select></label>
- <label>Association<select name="association_id"><option value="">Toutes</option>{% for x in associations %}<option value="{{x.id}}" {% if f.association_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
- <label>Bénévole<select name="volunteer_id"><option value="">Tous</option>{% for x in volunteers %}<option value="{{x.id}}" {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
- <label>Wilaya<select name="wilaya_id"><option value="">Toutes</option>{% for x in wilayas %}<option value="{{x.id}}" {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
- <label>Commune<select name="commune_id"><option value="">Toutes</option>{% for x in communes %}<option value="{{x.id}}" {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
- <label>Projet<select name="project_id"><option value="">Tous</option>{% for x in projects %}<option value="{{x.id}}" {% if f.project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
- <label>Zone<select name="zone_id"><option value="">Toutes</option>{% for x in zones %}<option value="{{x.id}}" {% if f.zone_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
- <label>Espèce<select name="species_id"><option value="">Toutes</option>{% for x in species %}<option value="{{x.id}}" {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label>
- <label>Santé<select name="health_status"><option value="">Toutes</option>{% for x in ['Bon','À surveiller','En danger','Mort'] %}<option {% if f.health_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Arrosage<select name="watering_status"><option value="">Tous</option>{% for x in ['À jour','À arroser','Urgent'] %}<option {% if f.watering_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label></div><div class="filter-actions"><a class="btn alt" href="/map">Réinitialiser</a><button class="btn">Appliquer</button></div></form>
- <div class="card noprint"><b id="resultCount">Chargement…</b> <button type="button" class="btn alt" id="locateBtn">📍 Ma position</button></div><div class="grid two"><div class="card"><div id="map" class="real-map"></div></div><div class="card"><h3>Arbres proches de moi</h3><div id="locationStatus" class="sub">Utilisez Ma position pour calculer les distances.</div><div id="nearbyList"></div></div></div>
- <script>const params=new URLSearchParams(window.location.search);let treeData=[],userLatLng=null,userMarker=null;const map=L.map('map').setView([35.697,-0.633],11);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap'}).addTo(map);const group=L.featureGroup().addTo(map);function esc(v){return String(v??'—').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}function treeIcon(t){const symbol=t.association_id?(t.association_symbol||'🌲'):'🌳';return L.divIcon({className:'tree-emoji-marker',html:'<span>'+symbol+'</span>',iconSize:[30,30],iconAnchor:[15,26]});}function popup(t){const owner=t.association_name?('Association : '+esc(t.association_name)):('Bénévole : '+esc(t.volunteer_name));return `<b>${esc(t.tree_code)}</b><br>${esc(t.species_name)}<br>${owner}<br>Projet : ${esc(t.project_name)}<br>Zone : ${esc(t.zone_name)}<br>État : ${esc(t.health_status)} / ${esc(t.watering_status)}<br><a href="/tree/${t.id}">Ouvrir la fiche</a>`;}fetch('/api/trees?'+params.toString()).then(r=>r.json()).then(data=>{treeData=data;document.getElementById('resultCount').textContent=data.length+' arbre(s) trouvé(s)';data.forEach(t=>L.marker([t.latitude,t.longitude],{icon:treeIcon(t)}).bindPopup(popup(t)).addTo(group));if(data.length)map.fitBounds(group.getBounds().pad(.18));});function distanceKm(a,b,c,d){const R=6371,rad=x=>x*Math.PI/180,x=rad(c-a),y=rad(d-b),q=Math.sin(x/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(y/2)**2;return 2*R*Math.asin(Math.sqrt(q));}function nearby(){if(!userLatLng)return;const rows=treeData.map(t=>({...t,d:distanceKm(userLatLng.lat,userLatLng.lng,t.latitude,t.longitude)})).sort((a,b)=>a.d-b.d).slice(0,15);nearbyList.innerHTML=rows.map(t=>`<div class="priority"><b>${esc(t.tree_code)} — ${esc(t.species_name)}</b><span>${t.d<1?Math.round(t.d*1000)+' m':t.d.toFixed(2)+' km'} • ${esc(t.association_name||t.volunteer_name)}</span></div>`).join('');}locateBtn.onclick=()=>navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{userLatLng={lat:p.coords.latitude,lng:p.coords.longitude};if(userMarker)map.removeLayer(userMarker);userMarker=L.marker(userLatLng).addTo(map).bindPopup('Votre position');map.setView(userLatLng,16);nearby();});</script>""",f=f,associations=assocs,volunteers=volunteers,active_count=sum(bool(v) for k,v in f.items() if k!='quick' and v),**opts)
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ ctx=active_context(c); opts=common_filter_options(c,f); c.close()
+ return page('Carte commune',"""<div class='section-title'><div><h2>🗺 Carte commune</h2><p class='sub'>Contexte : <b>{{ctx.name}}</b>. Les mêmes filtres sont appliqués côté serveur à la carte et aux listes.</p></div></div>
+ <form id='mapFilters' class='card toolbar noprint' method='get'>
+ <label>Éléments<select name='view_type' id='viewType'><option value='all'>Tout afficher</option><option value='tree'>Arbres</option><option value='project'>Projets</option><option value='zone'>Zones</option><option value='event'>Événements</option><option value='mission'>Missions</option></select></label>
+ <label>Wilaya<select name='wilaya_id'><option value=''>Toutes</option>{% for x in wilayas %}<option value='{{x.id}}' {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
+ <label>Commune<select name='commune_id'><option value=''>Toutes</option>{% for x in communes %}<option value='{{x.id}}' {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
+ <label>Projet<select name='project_id'><option value=''>Tous les projets autorisés</option>{% for p in projects %}<option value='{{p.id}}' {% if f.project_id|string==p.id|string %}selected{% endif %}>{{'🤝 ' if p.collaborative else ''}}{{p.name}}</option>{% endfor %}</select></label>
+ <label>Zone<select name='zone_id'><option value=''>Toutes</option>{% for z in zones %}<option value='{{z.id}}' {% if f.zone_id|string==z.id|string %}selected{% endif %}>{{z.name}}</option>{% endfor %}</select></label>
+ <label>Espèce<select name='species_id'><option value=''>Toutes</option>{% for x in species %}<option value='{{x.id}}' {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label>
+ <label>Bénévole<select name='volunteer_id'><option value=''>Tous</option>{% for x in volunteers %}<option value='{{x.id}}' {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>
+ <label>Santé<select name='health_status'><option value=''>Toutes</option>{% for x in ['Bon','À surveiller','En danger','Mort'] %}<option {% if f.health_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+ <label>Arrosage<select name='watering_status'><option value=''>Tous</option>{% for x in ['À jour','À arroser','Urgent'] %}<option {% if f.watering_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+ <label>État<select name='status'><option value=''>Tous</option>{% for x in ['Planifié','Planifiée','Ouvert','En cours','Terminé','Terminée','Annulé','Annulée'] %}<option {% if f.status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+ <label>Du<input type='date' name='date_from' value='{{f.date_from}}'></label><label>Au<input type='date' name='date_to' value='{{f.date_to}}'></label>
+ <button class='btn'>Appliquer</button><a class='btn alt' href='/map'>Réinitialiser</a><button class='btn alt' type='button' id='locateBtn'>📍 Ma position</button></form>
+ <div class='card'><div class='map-legend'><span>🌳 Arbre</span> <span>📁 Projet</span> <span>🟩 Zone</span> <span>📆 Événement</span> <span>📋 Mission</span> <span>🤝 Projet partenaire</span></div><b id='resultCount'>Chargement…</b></div>
+ <div class='grid two map-layout'><div class='card'><div id='map' class='real-map'></div></div><div class='card'><h3>Éléments proches</h3><div id='locationStatus' class='sub'>Utilisez « Ma position » pour calculer les distances.</div><div id='nearbyList'></div></div></div>
+ <script>(function(){const qp=new URLSearchParams(window.location.search),vt=qp.get('view_type')||'all';document.getElementById('viewType').value=vt;if(vt!=='all'){qp.delete('type');qp.append('type',vt)}qp.delete('view_type');const map=L.map('map').setView([35.697,-0.633],11);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap'}).addTo(map);const group=L.featureGroup().addTo(map);let items=[],me=null,meMarker=null;const icons={tree:'🌳',project:'📁',zone:'🟩',event:'📆',mission:'📋'};function esc(v){return String(v??'—').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}function markerIcon(x){return L.divIcon({className:'tree-emoji-marker map-common-marker',html:'<span>'+icons[x.type]+'</span>',iconSize:[32,32],iconAnchor:[16,27]});}function popup(x){return '<b>'+icons[x.type]+' '+esc(x.title)+'</b><br>'+esc(x.subtitle)+(x.url?'<br><a href="'+x.url+'">Ouvrir la fiche</a>':'');}fetch('/api/map-data?'+qp.toString()).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(payload=>{items=payload.items||[];resultCount.textContent=items.length+' élément(s) visible(s)';items.forEach(x=>L.marker([x.lat,x.lon],{icon:markerIcon(x)}).bindPopup(popup(x)).addTo(group));if(items.length)map.fitBounds(group.getBounds().pad(.18),{maxZoom:16});nearby();}).catch(()=>{resultCount.textContent='Impossible de charger les données de la carte.'});function dist(a,b,c,d){const R=6371,rad=x=>x*Math.PI/180,x=rad(c-a),y=rad(d-b),q=Math.sin(x/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(y/2)**2;return 2*R*Math.asin(Math.sqrt(q));}function nearby(){if(!me)return;const rows=items.map(x=>({...x,d:dist(me.lat,me.lng,x.lat,x.lon)})).sort((a,b)=>a.d-b.d).slice(0,20);nearbyList.innerHTML=rows.map(x=>'<div class="priority"><b>'+icons[x.type]+' '+esc(x.title)+'</b><span>'+(x.d<1?Math.round(x.d*1000)+' m':x.d.toFixed(2)+' km')+' · '+esc(x.subtitle)+'</span></div>').join('')||'<p class="sub">Aucun élément géolocalisé.</p>';}locateBtn.onclick=()=>{if(!navigator.geolocation){locationStatus.textContent='GPS indisponible sur cet appareil.';return}locationStatus.textContent='Recherche de votre position…';navigator.geolocation.getCurrentPosition(p=>{me={lat:p.coords.latitude,lng:p.coords.longitude};if(meMarker)map.removeLayer(meMarker);meMarker=L.marker(me).addTo(map).bindPopup('Votre position');map.setView(me,15);locationStatus.textContent='Position obtenue. Liste triée par distance.';nearby();},()=>{locationStatus.textContent='Position refusée ou indisponible.'},{enableHighAccuracy:true,timeout:15000});};})();</script>""",ctx=ctx,f=f,**opts)
 
 @app.route('/trees/<int:tid>/map')
 @login_required
@@ -1514,6 +1962,57 @@ def planting_review_history(tid):
  if not t:return ('Introuvable',404)
  return page('Historique de validation',"""<div class="card"><h2>{{t.species_name}} — {{t.volunteer_name}}</h2><p>Statut actuel : <b>{{t.approval_status}}</b></p><p>Motif : {{t.rejection_reason or '—'}}</p></div><div class="card"><table><tr><th>Date</th><th>Décision</th><th>Administrateur</th><th>Motif</th></tr>{% for r in reviews %}<tr><td>{{r.created_at}}</td><td>{{r.decision}}</td><td>{{r.reviewer_name}}</td><td>{{r.reason or '—'}}</td></tr>{% endfor %}</table></div>""",t=t,reviews=reviews)
 
+
+# Alpha 4 Lot 8 — operational multi-association integrity.
+def association_user_allowed(c,user_id,association_id):
+ if not user_id: return True
+ return bool(c.execute("SELECT 1 FROM association_memberships am JOIN users u ON u.id=am.user_id WHERE am.association_id=? AND am.user_id=? AND am.status='approved' AND u.active=1",(association_id,user_id)).fetchone())
+
+def validate_association_users(c,user_ids,association_id):
+ bad=[]
+ for uid in {str(x) for x in user_ids if x not in (None,'')}:
+  try: iid=int(uid)
+  except Exception: bad.append(uid); continue
+  if not association_user_allowed(c,iid,association_id): bad.append(uid)
+ return bad
+
+def operation_project_allowed(c,project_id,association_id,capability):
+ if not project_id: return True,None
+ p=c.execute('SELECT id,association_id,active FROM projects WHERE id=?',(project_id,)).fetchone()
+ if not p or not p['active']: return False,p
+ if int(p['association_id'] or 0)==int(association_id or 0): return True,p
+ return collaboration_access(c,project_id,association_id,capability),p
+
+def validate_operational_links(c,association_id,project_id=None,zone_id=None,team_id=None,capability='can_manage_missions'):
+ ok,p=operation_project_allowed(c,project_id,association_id,capability)
+ if not ok: return False,'Projet non autorisé pour cette association.'
+ z=None
+ if zone_id:
+  z=c.execute('SELECT id,project_id,active FROM zones WHERE id=?',(zone_id,)).fetchone()
+  if not z or not z['active']: return False,'Zone invalide ou archivée.'
+  if not project_id or int(z['project_id'] or 0)!=int(project_id): return False,'La zone ne correspond pas au projet sélectionné.'
+ t=None
+ if team_id:
+  t=c.execute('SELECT id,association_id,project_id,zone_id,active FROM teams WHERE id=?',(team_id,)).fetchone()
+  if not t or not t['active']: return False,'Équipe invalide ou inactive.'
+  if int(t['association_id'] or 0)!=int(association_id or 0): return False,'Cette équipe appartient à une autre association.'
+  if project_id and t['project_id'] and int(t['project_id'])!=int(project_id): return False,'L’équipe appartient à un autre projet.'
+  if zone_id and t['zone_id'] and int(t['zone_id'])!=int(zone_id): return False,'L’équipe appartient à une autre zone.'
+ return True,None
+
+def association_operational_people(c,association_id):
+ return c.execute("SELECT DISTINCT u.id,u.name,u.phone FROM users u JOIN association_memberships am ON am.user_id=u.id WHERE u.active=1 AND am.association_id=? AND am.status='approved' ORDER BY u.name",(association_id,)).fetchall()
+
+def association_operation_projects(c,association_id,capability):
+ rows=c.execute("SELECT id,name,association_id FROM projects WHERE active=1 AND (association_id=? OR id IN (SELECT project_id FROM association_collaborations WHERE invited_association_id=? AND status='accepted' AND "+capability+"=1)) ORDER BY name",(association_id,association_id)).fetchall()
+ return rows
+
+def resource_admin_context(c,table,rid):
+ row=c.execute(f'SELECT association_id FROM {table} WHERE id=?',(rid,)).fetchone()
+ if not row:return False,row
+ aid=row['association_id']; ctx=active_context(c)
+ return bool(is_super_admin() or (ctx.get('type')=='association' and int(ctx.get('association_id') or 0)==int(aid or 0) and has_association_permission('association.update',aid,audit_denied=False))),row
+
 @app.route('/teams')
 @login_required
 def teams_page():
@@ -1530,18 +2029,29 @@ TEAM_FORM="""<div class="card"><form method="post" class="form" id="teamForm"><l
 @app.route('/teams/new',methods=['GET','POST'])
 @login_required
 def team_new():
- if not is_admin():return redirect('/teams')
- c=db(); opts=filter_options(c); ctx=active_context();
- if ctx['type']=='association':
-  leaders=c.execute("SELECT DISTINCT u.id,u.name FROM users u JOIN association_memberships am ON am.user_id=u.id WHERE u.active=1 AND am.association_id=? AND am.status='approved' ORDER BY u.name",(ctx['association_id'],)).fetchall(); volunteers=c.execute("SELECT DISTINCT u.id,u.name,u.phone FROM users u JOIN association_memberships am ON am.user_id=u.id WHERE u.active=1 AND am.association_id=? AND am.status='approved' ORDER BY u.name",(ctx['association_id'],)).fetchall()
- else:
-  leaders=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall(); volunteers=c.execute("SELECT id,name,phone FROM users WHERE active=1 ORDER BY name").fetchall(); suggested=next_entity_code(c,'teams','code','EQUIPE')
+ if not is_admin(): return ('Administration association requise',403)
+ c=db(); ctx=active_context(c); aid=ctx.get('association_id')
+ if ctx.get('type')!='association' or not aid: c.close(); return ('Contexte association requis',403)
+ projects=association_operation_projects(c,aid,'can_manage_missions'); pids=[x['id'] for x in projects]
+ zones=c.execute('SELECT id,name,project_id FROM zones WHERE active=1 AND project_id IN ('+(','.join('?'*len(pids)) if pids else 'NULL')+') ORDER BY name',pids).fetchall() if pids else []
+ people=association_operational_people(c,aid); leaders=people; volunteers=people; suggested=next_entity_code(c,'teams','code','EQUIPE')
+ opts=filter_options(c); opts.update(projects=projects,zones=zones)
  if request.method=='POST':
-  now=datetime.now().isoformat(timespec='minutes'); code=clean(request.form.get('code')) or suggested; cur=c.execute('INSERT INTO teams(code,name,leader_user_id,project_id,zone_id,phone,mission,active,created_by_user_id,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,1,?,?,?,?)',(code,request.form['name'].strip(),request.form.get('leader_user_id') or None,request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('phone'),request.form.get('mission'),session['uid'],now,now,current_association_id())); tid=cur.lastrowid
-  members=set(request.form.getlist('member_ids')); leader=request.form.get('leader_user_id');
-  if leader: members.add(leader)
-  for uid in members: c.execute("INSERT OR REPLACE INTO team_members(team_id,user_id,status,joined_at,approved_by_user_id,approved_at) VALUES(?,?,'active',?,?,?)",(tid,uid,now,session['uid'],now)); c.execute('UPDATE users SET team_id=? WHERE id=?',(tid,uid))
-  c.commit(); c.close(); log_action('create','team',tid); flash('Équipe créée avec ses membres.'); return redirect('/teams/'+str(tid))
+  project_id=request.form.get('project_id') or None; zone_id=request.form.get('zone_id') or None; leader=request.form.get('leader_user_id') or None
+  ok,msg=validate_operational_links(c,aid,project_id,zone_id,None,'can_manage_missions')
+  members=set(request.form.getlist('member_ids'))
+  if leader: members.add(str(leader))
+  bad=validate_association_users(c,members,aid)
+  if not ok or bad:
+   c.close(); return ((msg or 'Membre non autorisé : '+','.join(map(str,bad))),403)
+  now=datetime.now().isoformat(timespec='minutes'); code=suggested
+  try:
+   cur=c.execute('INSERT INTO teams(code,name,leader_user_id,project_id,zone_id,phone,mission,active,created_by_user_id,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,1,?,?,?,?)',(code,request.form['name'].strip(),leader,project_id,zone_id,request.form.get('phone'),request.form.get('mission'),session['uid'],now,now,aid)); tid=cur.lastrowid
+  except sqlite3.IntegrityError:
+   c.close(); return ('Code équipe déjà utilisé',409)
+  for uid in members:
+   c.execute("INSERT OR REPLACE INTO team_members(team_id,user_id,status,joined_at,approved_by_user_id,approved_at) VALUES(?,?,'active',?,?,?)",(tid,uid,now,session['uid'],now)); c.execute('UPDATE users SET team_id=? WHERE id=?',(tid,uid))
+  c.commit(); c.close(); log_action('create','team',tid); flash('Équipe créée avec ses membres autorisés.'); return redirect('/teams/'+str(tid))
  c.close(); return page('Nouvelle équipe',TEAM_FORM,t=None,leaders=leaders,volunteers=volunteers,selected_members=set(),suggested_code=suggested,cancel_url='/teams',**opts)
 
 @app.route('/teams/<int:tid>')
@@ -1556,18 +2066,25 @@ def team_detail(tid):
 @app.route('/teams/<int:tid>/edit',methods=['GET','POST'])
 @login_required
 def team_edit(tid):
- if not is_admin():return redirect('/teams')
- c=db();t=c.execute('SELECT * FROM teams WHERE id=?',(tid,)).fetchone();opts=filter_options(c);leaders=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall();volunteers=c.execute('SELECT id,name,phone FROM users WHERE active=1 ORDER BY name').fetchall();selected={r['user_id'] for r in c.execute("SELECT user_id FROM team_members WHERE team_id=? AND status='active'",(tid,)).fetchall()}
- if not t:c.close();return ('Introuvable',404)
+ c=db(); t=c.execute('SELECT * FROM teams WHERE id=?',(tid,)).fetchone()
+ if not t: c.close(); return ('Équipe introuvable',404)
+ aid=t['association_id']; ctx=active_context(c)
+ if not (is_super_admin() or (ctx.get('type')=='association' and int(ctx.get('association_id') or 0)==int(aid or 0) and is_admin())): c.close(); return ('Administration de l’association de l’équipe requise',403)
+ projects=association_operation_projects(c,aid,'can_manage_missions'); pids=[x['id'] for x in projects]
+ zones=c.execute('SELECT id,name,project_id FROM zones WHERE active=1 AND project_id IN ('+(','.join('?'*len(pids)) if pids else 'NULL')+') ORDER BY name',pids).fetchall() if pids else []
+ people=association_operational_people(c,aid); leaders=people; volunteers=people; selected={r['user_id'] for r in c.execute("SELECT user_id FROM team_members WHERE team_id=? AND status='active'",(tid,))}; opts=filter_options(c); opts.update(projects=projects,zones=zones)
  if request.method=='POST':
-  old=t['leader_user_id']; new=request.form.get('leader_user_id') or None; now=datetime.now().isoformat(timespec='minutes'); c.execute('UPDATE teams SET name=?,leader_user_id=?,project_id=?,zone_id=?,phone=?,mission=?,active=?,updated_at=? WHERE id=?',(request.form['name'].strip(),new,request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('phone'),request.form.get('mission'),request.form.get('active',1),now,tid))
-  desired=set(request.form.getlist('member_ids')); 
+  new=request.form.get('leader_user_id') or None; project_id=request.form.get('project_id') or None; zone_id=request.form.get('zone_id') or None
+  ok,msg=validate_operational_links(c,aid,project_id,zone_id,None,'can_manage_missions'); desired=set(request.form.getlist('member_ids'))
   if new: desired.add(str(new))
-  current={str(x['user_id']) for x in c.execute("SELECT user_id FROM team_members WHERE team_id=? AND status='active'",(tid,)).fetchall()}
+  bad=validate_association_users(c,desired,aid)
+  if not ok or bad: c.close(); return ((msg or 'Membre non autorisé : '+','.join(map(str,bad))),403)
+  now=datetime.now().isoformat(timespec='minutes'); c.execute('UPDATE teams SET name=?,leader_user_id=?,project_id=?,zone_id=?,phone=?,mission=?,active=?,updated_at=? WHERE id=?',(request.form['name'].strip(),new,project_id,zone_id,request.form.get('phone'),request.form.get('mission'),request.form.get('active',1),now,tid))
+  current={str(x['user_id']) for x in c.execute("SELECT user_id FROM team_members WHERE team_id=? AND status='active'",(tid,))}
   for uid in desired: c.execute("INSERT OR REPLACE INTO team_members(team_id,user_id,status,joined_at,approved_by_user_id,approved_at) VALUES(?,?,'active',?,?,?)",(tid,uid,now,session['uid'],now)); c.execute('UPDATE users SET team_id=? WHERE id=?',(tid,uid))
   for uid in current-desired: c.execute("UPDATE team_members SET status='removed' WHERE team_id=? AND user_id=?",(tid,uid)); c.execute('UPDATE users SET team_id=NULL WHERE id=? AND team_id=?',(uid,tid))
-  c.commit();c.close();log_action('edit','team',tid);flash('Équipe modifiée et membres synchronisés.');return redirect('/teams/'+str(tid))
- c.close();return page('Modifier équipe',TEAM_FORM,t=t,leaders=leaders,volunteers=volunteers,selected_members=selected,suggested_code=t['code'] or '',cancel_url='/teams/'+str(tid),**opts)
+  c.commit(); c.close(); log_action('edit','team',tid); flash('Équipe modifiée et membres synchronisés.'); return redirect('/teams/'+str(tid))
+ c.close(); return page('Modifier équipe',TEAM_FORM,t=t,leaders=leaders,volunteers=volunteers,selected_members=selected,suggested_code=t['code'] or '',cancel_url='/teams/'+str(tid),**opts)
 
 @app.post('/teams/<int:tid>/archive')
 @login_required
@@ -1580,7 +2097,12 @@ def team_archive(tid):
 @app.post('/teams/<int:tid>/join')
 @login_required
 def team_join(tid):
- c=db(); now=datetime.now().isoformat(timespec='minutes'); existing=c.execute("SELECT id,status FROM team_join_requests WHERE team_id=? AND user_id=? ORDER BY id DESC LIMIT 1",(tid,session['uid'])).fetchone()
+ c=db(); t=c.execute('SELECT id,association_id,active FROM teams WHERE id=?',(tid,)).fetchone()
+ if not t or not t['active']: c.close(); return ('Équipe introuvable ou inactive',404)
+ if not association_user_allowed(c,session['uid'],t['association_id']): c.close(); return ('Vous n’êtes pas membre de cette association',403)
+ ctx=active_context(c)
+ if ctx.get('type')!='association' or int(ctx.get('association_id') or 0)!=int(t['association_id'] or 0): c.close(); return ('Activez l’association de cette équipe avant de la rejoindre',403)
+ now=datetime.now().isoformat(timespec='minutes'); existing=c.execute("SELECT id,status FROM team_join_requests WHERE team_id=? AND user_id=? ORDER BY id DESC LIMIT 1",(tid,session['uid'])).fetchone()
  if existing and existing['status']=='pending': flash('Votre demande est déjà en attente.')
  elif c.execute("SELECT id FROM team_members WHERE team_id=? AND user_id=? AND status='active'",(tid,session['uid'])).fetchone(): flash('Vous êtes déjà membre de cette équipe.')
  else: c.execute("INSERT INTO team_join_requests(team_id,user_id,status,requested_at) VALUES(?,?,'pending',?)",(tid,session['uid'],now)); c.commit(); flash('Demande envoyée.')
@@ -1625,25 +2147,51 @@ def team_member_remove(tid,uid):
 @app.route('/events')
 @login_required
 def events_page():
- c=db(); q=clean(request.args.get('q')); status=clean(request.args.get('status')); event_type=clean(request.args.get('event_type')); scope,sp=context_condition('e'); w=['e.active=1',scope]; p=list(sp)
- if q: w.append('(e.title LIKE ? OR e.location LIKE ? OR e.description LIKE ?)'); p += ['%'+q+'%']*3
- if status: w.append('e.status=?'); p.append(status)
- if event_type: w.append('e.event_type=?'); p.append(event_type)
- rows=c.execute("SELECT e.*,p.name project_name,z.name zone_name,tm.name team_name,(SELECT COUNT(*) FROM event_participants ep WHERE ep.event_id=e.id AND ep.status='Inscrit') participant_count FROM events e LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN zones z ON z.id=e.zone_id LEFT JOIN teams tm ON tm.id=e.team_id WHERE "+' AND '.join(w)+' ORDER BY e.start_at ASC',p).fetchall(); c.close()
- return page('Événements',"""<div class="section-title"><h2>Calendrier des événements</h2>{% if admin %}<a class="btn" href="/events/new">+ Nouvel événement</a>{% endif %}</div><form class="card toolbar"><label>Recherche<input name="q" value="{{q}}"></label><label>Type<select name="event_type"><option value="">Tous</option>{% for x in ['Plantation','Arrosage','Nettoyage','Réunion','Formation'] %}<option {% if event_type==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>État<select name="status"><option value="">Tous</option>{% for x in ['Planifié','Ouvert','Complet','Terminé','Annulé'] %}<option {% if status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><button class="btn">Filtrer</button><a class="btn alt" href="/events">Effacer</a></form><div class="grid two">{% for e in rows %}<div class="card"><div class="section-title"><div><span class="badge watch">{{e.event_type}}</span><h3><a href="/events/{{e.id}}">{{e.title}}</a></h3></div><span class="badge {% if e.status=='Annulé' %}danger{% elif e.status=='Terminé' %}good{% else %}watch{% endif %}">{{e.status}}</span></div><p><b>Début :</b> {{e.start_at}}</p><p><b>Lieu :</b> {{e.location or e.zone_name or e.project_name or '—'}}</p><p><b>Participants :</b> {{e.participant_count}}{% if e.max_participants %} / {{e.max_participants}}{% endif %}</p><a class="btn alt" href="/events/{{e.id}}">Ouvrir</a>{% if admin %} <form method="post" action="/events/{{e.id}}/delete" style="display:inline" onsubmit="return confirm('Supprimer ou archiver cet événement ?')"><button class="btn red">Supprimer</button></form>{% endif %}</div>{% else %}<div class="card">Aucun événement.</div>{% endfor %}</div>""",rows=rows,q=q,status=status,event_type=event_type,admin=is_admin())
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ opts=common_filter_options(c,f); ctx=active_context(c); ids=[int(x['id']) for x in accessible_filter_projects(c,ctx)]
+ w=['e.active=1']; p=[]
+ if ctx.get('type')=='personal': w.append('e.association_id IS NULL')
+ elif ctx.get('type')=='association':
+  if ids: w.append('e.project_id IN ('+','.join('?'*len(ids))+')'); p.extend(ids)
+  else: w.append('1=0')
+ elif not is_super_admin(): w.append('1=0')
+ if f['q']: w.append('(e.title LIKE ? OR e.location LIKE ? OR e.description LIKE ?)'); p += ['%'+f['q']+'%']*3
+ if f['status']: w.append('e.status=?'); p.append(f['status'])
+ if f['action_type']: w.append('e.event_type=?'); p.append(f['action_type'])
+ if f['project_id']: w.append('e.project_id=?'); p.append(f['project_id'])
+ if f['zone_id']: w.append('e.zone_id=?'); p.append(f['zone_id'])
+ if f['date_from']: w.append('date(e.start_at)>=date(?)'); p.append(f['date_from'])
+ if f['date_to']: w.append('date(e.start_at)<=date(?)'); p.append(f['date_to'])
+ apply_common_geo_filters(w,p,f,'pr')
+ rows=c.execute("SELECT e.*,pr.name project_name,z.name zone_name,tm.name team_name,(SELECT COUNT(*) FROM event_participants ep WHERE ep.event_id=e.id AND ep.status='Inscrit') participant_count FROM events e LEFT JOIN projects pr ON pr.id=e.project_id LEFT JOIN zones z ON z.id=e.zone_id LEFT JOIN teams tm ON tm.id=e.team_id WHERE "+' AND '.join(w)+' ORDER BY e.start_at ASC',p).fetchall(); c.close()
+ return page('Événements',"""<div class="section-title"><h2>Calendrier des événements</h2>{% if admin %}<a class="btn" href="/events/new">+ Nouvel événement</a>{% endif %}</div><form class="card toolbar"><label>Recherche<input name="q" value="{{f.q}}"></label><label>Wilaya<select name="wilaya_id"><option value="">Toutes</option>{% for x in wilayas %}<option value="{{x.id}}" {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">Toutes</option>{% for x in communes %}<option value="{{x.id}}" {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Projet<select name="project_id"><option value="">Tous</option>{% for x in projects %}<option value="{{x.id}}" {% if f.project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id"><option value="">Toutes</option>{% for x in zones %}<option value="{{x.id}}" {% if f.zone_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Type<select name="action_type"><option value="">Tous</option>{% for x in ['Plantation','Arrosage','Nettoyage','Réunion','Formation'] %}<option {% if f.action_type==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>État<select name="status"><option value="">Tous</option>{% for x in ['Planifié','Ouvert','Complet','Terminé','Annulé'] %}<option {% if f.status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Du<input type="date" name="date_from" value="{{f.date_from}}"></label><label>Au<input type="date" name="date_to" value="{{f.date_to}}"></label><button class="btn">Filtrer</button><a class="btn alt" href="/events">Effacer</a></form><div class="grid two">{% for e in rows %}<div class="card"><div class="section-title"><div><span class="badge watch">{{e.event_type}}</span><h3><a href="/events/{{e.id}}">{{e.title}}</a></h3></div><span class="badge {% if e.status=='Annulé' %}danger{% elif e.status=='Terminé' %}good{% else %}watch{% endif %}">{{e.status}}</span></div><p><b>Début :</b> {{e.start_at}}</p><p><b>Lieu :</b> {{e.location or e.zone_name or e.project_name or '—'}}</p><p><b>Participants :</b> {{e.participant_count}}{% if e.max_participants %} / {{e.max_participants}}{% endif %}</p><a class="btn alt" href="/events/{{e.id}}">Ouvrir</a>{% if admin %} <form method="post" action="/events/{{e.id}}/delete" style="display:inline" onsubmit="return confirm('Supprimer ou archiver cet événement ?')"><button class="btn red">Supprimer</button></form>{% endif %}</div>{% else %}<div class="card">Aucun événement.</div>{% endfor %}</div>""",rows=rows,f=f,admin=is_admin(),**opts)
 
-EVENT_FORM="""<div class="card"><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Titre<input name="title" value="{{request.form.get('title',e.title if e else '')}}" required></label><label>Type<select name="event_type">{% set et=request.form.get('event_type',e.event_type if e else 'Plantation') %}{% for x in ['Plantation','Arrosage','Nettoyage','Réunion','Formation'] %}<option {% if et==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at" value="{{request.form.get('start_at',e.start_at if e else '')}}" required></label><label>Fin<input type="datetime-local" name="end_at" value="{{request.form.get('end_at',e.end_at if e and e.end_at else '')}}"></label><label>Lieu<input name="location" value="{{request.form.get('location',e.location if e and e.location else '')}}"></label><label>Places maximum <span class="sub">(facultatif — vide = illimité)</span><input type="number" min="1" name="max_participants" placeholder="Laisser vide = illimité" value="{{request.form.get('max_participants',(e.max_participants if e and e.max_participants else ''))}}"></label><label>Projet<select name="project_id" id="eventProject"><option value="">—</option>{% set pid=request.form.get('project_id',e.project_id if e else '') %}{% for x in projects %}<option value="{{x.id}}" {% if pid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id" id="eventZone"><option value="">—</option>{% set zid=request.form.get('zone_id',e.zone_id if e else '') %}{% for x in zones %}<option value="{{x.id}}" {% if zid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Équipe<select name="team_id"><option value="">—</option>{% set tid=request.form.get('team_id',e.team_id if e else '') %}{% for x in teams %}<option value="{{x.id}}" {% if tid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>{% if e %}<label>État<select name="status">{% for x in ['Planifié','Ouvert','Complet','Terminé','Annulé'] %}<option {% if request.form.get('status',e.status)==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>{% endif %}<label>Latitude<input id="eventLat" name="latitude" value="{{request.form.get('latitude',e.latitude if e and e.latitude is not none else '')}}"></label><label>Longitude<input id="eventLon" name="longitude" value="{{request.form.get('longitude',e.longitude if e and e.longitude is not none else '')}}"></label><div class="full">{{location_picker|safe}}</div><label class="full">Description<textarea name="description">{{request.form.get('description',e.description if e and e.description else '')}}</textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="{{cancel_url}}">Annuler</a></div></form></div><script>async function loadEventZones(sel){let p=eventProject.value;eventZone.innerHTML='<option value="">—</option>';if(!p)return;let rows=await fetch('/api/projects/'+p+'/zones').then(r=>r.json());rows.forEach(x=>{let o=new Option(x.name,x.id);if(String(x.id)==String(sel))o.selected=true;eventZone.add(o)})}eventProject.addEventListener('change',()=>loadEventZones(null));</script>"""
+EVENT_FORM="""<div class="card"><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Code<input name="code" value="{{e.code if e and e.code else suggested_code}}" readonly></label><label>Titre<input name="title" value="{{request.form.get('title',e.title if e else '')}}" required></label><label>Type<select name="event_type">{% set et=request.form.get('event_type',e.event_type if e else 'Plantation') %}{% for x in ['Plantation','Arrosage','Nettoyage','Réunion','Formation'] %}<option {% if et==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at" value="{{request.form.get('start_at',e.start_at if e else '')}}" required></label><label>Fin<input type="datetime-local" name="end_at" value="{{request.form.get('end_at',e.end_at if e and e.end_at else '')}}"></label><label>Lieu<input name="location" value="{{request.form.get('location',e.location if e and e.location else '')}}"></label><label>Places maximum <span class="sub">(facultatif — vide = illimité)</span><input type="number" min="1" name="max_participants" placeholder="Laisser vide = illimité" value="{{request.form.get('max_participants',(e.max_participants if e and e.max_participants else ''))}}"></label><label>Projet<select name="project_id" id="eventProject"><option value="">—</option>{% set pid=request.form.get('project_id',e.project_id if e else '') %}{% for x in projects %}<option value="{{x.id}}" {% if pid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id" id="eventZone"><option value="">—</option>{% set zid=request.form.get('zone_id',e.zone_id if e else '') %}{% for x in zones %}<option value="{{x.id}}" {% if zid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Équipe<select name="team_id"><option value="">—</option>{% set tid=request.form.get('team_id',e.team_id if e else '') %}{% for x in teams %}<option value="{{x.id}}" {% if tid|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label>{% if e %}<label>État<select name="status">{% for x in ['Planifié','Ouvert','Complet','Terminé','Annulé'] %}<option {% if request.form.get('status',e.status)==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>{% endif %}<label>Latitude<input id="eventLat" name="latitude" value="{{request.form.get('latitude',e.latitude if e and e.latitude is not none else '')}}"></label><label>Longitude<input id="eventLon" name="longitude" value="{{request.form.get('longitude',e.longitude if e and e.longitude is not none else '')}}"></label><div class="full">{{location_picker|safe}}</div><label class="full">Description<textarea name="description">{{request.form.get('description',e.description if e and e.description else '')}}</textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="{{cancel_url}}">Annuler</a></div></form></div><script>async function loadEventZones(sel){let p=eventProject.value;eventZone.innerHTML='<option value="">—</option>';if(!p)return;let rows=await fetch('/api/projects/'+p+'/zones').then(r=>r.json());rows.forEach(x=>{let o=new Option(x.name,x.id);if(String(x.id)==String(sel))o.selected=true;eventZone.add(o)})}eventProject.addEventListener('change',()=>loadEventZones(null));</script>"""
 
 def event_form_context(c):
- ps,pp=context_condition('projects'); zs,zp=context_condition('zones'); ts,tp=context_condition('teams'); return dict(projects=c.execute('SELECT id,name FROM projects WHERE active=1 AND '+ps+' ORDER BY name',pp).fetchall(),zones=c.execute('SELECT id,name FROM zones WHERE active=1 AND '+zs+' ORDER BY name',zp).fetchall(),teams=c.execute('SELECT id,name FROM teams WHERE active=1 AND '+ts+' ORDER BY name',tp).fetchall())
+ ctx=active_context(c); aid=ctx.get('association_id')
+ if ctx.get('type')!='association' or not aid: return dict(projects=[],zones=[],teams=[],suggested_code=next_entity_code(c,'events','code','EVT'))
+ projects=association_operation_projects(c,aid,'can_intervene'); pids=[x['id'] for x in projects]
+ zones=c.execute('SELECT id,name,project_id FROM zones WHERE active=1 AND project_id IN ('+(','.join('?'*len(pids)) if pids else 'NULL')+') ORDER BY name',pids).fetchall() if pids else []
+ teams=c.execute('SELECT id,name,project_id,zone_id FROM teams WHERE active=1 AND association_id=? ORDER BY name',(aid,)).fetchall()
+ return dict(projects=projects,zones=zones,teams=teams,suggested_code=next_entity_code(c,'events','code','EVT'))
 
 @app.route('/events/new',methods=['GET','POST'])
 @login_required
-@permission_required('event.manage')
 def event_new():
- c=db(); ctx=event_form_context(c); ctx['location_picker']=location_picker_markup('event')
+ c=db(); ac=active_context(c); aid=ac.get('association_id')
+ if ac.get('type')!='association' or not aid or not is_admin(): c.close(); return ('Administration association requise',403)
+ ctx=event_form_context(c); ctx['location_picker']=location_picker_markup('event')
  if request.method=='POST':
-  now=datetime.now().isoformat(timespec='minutes'); sql="INSERT INTO events(title,event_type,status,start_at,end_at,location,project_id,zone_id,team_id,max_participants,description,latitude,longitude,active,created_by_user_id,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)"; cur=c.execute(sql,(clean(request.form.get('title')),request.form.get('event_type'),request.form.get('status','Planifié'),request.form.get('start_at'),request.form.get('end_at') or None,clean(request.form.get('location')) or None,request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('team_id') or None,int(request.form.get('max_participants') or 0),clean(request.form.get('description')) or None,request.form.get('latitude') or None,request.form.get('longitude') or None,session['uid'],now,now,current_association_id())); eid=cur.lastrowid; c.commit(); c.close(); log_action('create','event',eid); notify('Nouvel événement',clean(request.form.get('title')),'/events/'+str(eid)); flash('Événement créé.'); return redirect('/events/'+str(eid))
+  project_id=request.form.get('project_id') or None; zone_id=request.form.get('zone_id') or None; team_id=request.form.get('team_id') or None
+  ok,msg=validate_operational_links(c,aid,project_id,zone_id,team_id,'can_intervene')
+  if not ok: c.close(); return (msg,403)
+  now=datetime.now().isoformat(timespec='minutes'); code=ctx['suggested_code']
+  try:
+   sql="INSERT INTO events(code,title,event_type,status,start_at,end_at,location,project_id,zone_id,team_id,max_participants,description,latitude,longitude,active,created_by_user_id,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)"; cur=c.execute(sql,(code,clean(request.form.get('title')),request.form.get('event_type'),request.form.get('status','Planifié'),request.form.get('start_at'),request.form.get('end_at') or None,clean(request.form.get('location')) or None,project_id,zone_id,team_id,int(request.form.get('max_participants') or 0),clean(request.form.get('description')) or None,request.form.get('latitude') or None,request.form.get('longitude') or None,session['uid'],now,now,aid)); eid=cur.lastrowid
+  except sqlite3.IntegrityError: c.close(); return ('Code événement déjà utilisé',409)
+  c.commit(); c.close(); log_action('create','event',eid); notify('Nouvel événement',clean(request.form.get('title')),'/events/'+str(eid)); flash('Événement créé.'); return redirect('/events/'+str(eid))
  c.close(); return page('Nouvel événement',EVENT_FORM,e=None,cancel_url='/events',**ctx)
 
 @app.route('/events/<int:eid>')
@@ -1654,16 +2202,21 @@ def event_detail(eid):
  if not e: c.close(); return ('Événement introuvable',404)
  participants=c.execute("SELECT ep.*,u.name,u.phone FROM event_participants ep JOIN users u ON u.id=ep.user_id WHERE ep.event_id=? ORDER BY ep.registered_at",(eid,)).fetchall(); mine=c.execute('SELECT * FROM event_participants WHERE event_id=? AND user_id=?',(eid,session['uid'])).fetchone(); c.close()
  full=bool(e['max_participants'] and sum(1 for x in participants if x['status']=='Inscrit')>=e['max_participants']); maps='' if e['latitude'] is None or e['longitude'] is None else f'https://www.google.com/maps/dir/?api=1&destination={e["latitude"]},{e["longitude"]}'
- return page('Fiche événement',"""<div class="section-title"><div><h2>{{e.title}}</h2><span class="badge watch">{{e.event_type}}</span> <span class="badge">{{e.status}}</span></div><div>{% if admin %}<a class="btn" href="/events/{{e.id}}/edit">Modifier</a> <form method="post" action="/events/{{e.id}}/delete" style="display:inline" onsubmit="return confirm('Supprimer ou archiver cet événement ?')"><button class="btn red">Supprimer</button></form>{% endif %} <a class="btn alt" href="/events">Retour</a></div></div><div class="grid two"><div class="card"><p><b>Début :</b> {{e.start_at}}</p><p><b>Fin :</b> {{e.end_at or '—'}}</p><p><b>Lieu :</b> {{e.location or '—'}}</p><p><b>Projet / Zone :</b> {{e.project_name or '—'}} / {{e.zone_name or '—'}}</p><p><b>Équipe :</b> {{e.team_name or '—'}}</p><p>{{e.description or ''}}</p>{% if maps %}<a class="btn alt" target="_blank" href="{{maps}}">🧭 Itinéraire Google Maps</a>{% endif %}</div><div class="card"><h3>Inscription</h3><p><b>{{participants|selectattr('status','equalto','Inscrit')|list|length}}</b>{% if e.max_participants %} / {{e.max_participants}}{% endif %} participants</p>{% if not admin %}{% if mine and mine.status=='Inscrit' %}<form method="post" action="/events/{{e.id}}/cancel"><button class="btn red">Annuler mon inscription</button></form>{% elif not full and e.status not in ['Terminé','Annulé'] %}<form method="post" action="/events/{{e.id}}/register"><button class="btn">M’inscrire</button></form>{% else %}<span class="badge danger">Inscriptions fermées</span>{% endif %}{% endif %}</div></div><div class="card"><h3>Participants</h3><table><tr><th>Nom</th><th>Téléphone</th><th>Inscription</th><th>Présence</th>{% if admin %}<th>Action</th>{% endif %}</tr>{% for p in participants %}<tr><td>{{p.name}}</td><td>{{p.phone or '—'}}</td><td>{{p.status}}</td><td>{{p.attendance_status}}</td>{% if admin %}<td><form method="post" action="/events/{{e.id}}/participants/{{p.user_id}}/attendance"><button class="btn alt">{{'Annuler présence' if p.attendance_status=='Présent' else 'Marquer présent'}}</button></form></td>{% endif %}</tr>{% else %}<tr><td colspan="5">Aucun participant.</td></tr>{% endfor %}</table></div>""",e=e,participants=participants,mine=mine,full=full,maps=maps,admin=is_admin())
+ return page('Fiche événement',"""<div class="section-title"><div><h2>{{e.title}}</h2><span class="badge watch">{{e.event_type}}</span> <span class="badge">{{e.status}}</span></div><div>{% if admin %}<a class="btn" href="/events/{{e.id}}/edit">Modifier</a> <form method="post" action="/events/{{e.id}}/delete" style="display:inline" onsubmit="return confirm('Supprimer ou archiver cet événement ?')"><button class="btn red">Supprimer</button></form>{% endif %} <a class="btn alt" href="/events">Retour</a></div></div><div class="grid two"><div class="card"><p><b>Début :</b> {{e.start_at}}</p><p><b>Fin :</b> {{e.end_at or '—'}}</p><p><b>Lieu :</b> {{e.location or '—'}}</p><p><b>Projet / Zone :</b> {{e.project_name or '—'}} / {{e.zone_name or '—'}}</p><p><b>Équipe :</b> {{e.team_name or '—'}}</p><p>{{e.description or ''}}</p>{% if maps %}<a class="btn alt" target="_blank" href="{{maps}}">🧭 Itinéraire Google Maps</a>{% endif %}</div><div class="card"><h3>Inscription</h3><p><b>{{participants|selectattr('status','equalto','Inscrit')|list|length}}</b>{% if e.max_participants %} / {{e.max_participants}}{% endif %} participants</p>{% if not admin %}{% if mine and mine.status=='Inscrit' %}<form method="post" action="/events/{{e.id}}/cancel"><button class="btn red">Annuler mon inscription</button></form>{% elif not full and e.status not in ['Terminé','Annulé'] %}<form method="post" action="/events/{{e.id}}/register"><button class="btn">M’inscrire</button></form>{% else %}<span class="badge danger">Inscriptions fermées</span>{% endif %}{% endif %}</div></div><div class="card"><h3>Participants</h3><table><tr><th>Nom</th><th>Téléphone</th><th>Inscription</th><th>Présence</th>{% if admin %}<th>Action</th>{% endif %}</tr>{% for p in participants %}<tr><td>{{p.name}}</td><td>{{p.phone or '—'}}</td><td>{{p.status}}</td><td>{{p.attendance_status}}</td>{% if admin %}<td><form method="post" action="/events/{{e.id}}/participants/{{p.user_id}}/attendance"><button class="btn alt">{{'Annuler présence' if p.attendance_status=='Présent' else 'Marquer présent'}}</button></form></td>{% endif %}</tr>{% else %}<tr><td colspan="5">Aucun participant.</td></tr>{% endfor %}</table></div>""",e=e,participants=participants,mine=mine,full=full,maps=maps,admin=(is_admin() and (is_super_admin() or int(active_context().get('association_id') or 0)==int(e['association_id'] or 0))))
 
 @app.route('/events/<int:eid>/edit',methods=['GET','POST'])
 @login_required
-@permission_required('event.manage')
 def event_edit(eid):
- c=db(); e=c.execute('SELECT * FROM events WHERE id=?',(eid,)).fetchone(); ctx=event_form_context(c); ctx['location_picker']=location_picker_markup('event')
+ c=db(); e=c.execute('SELECT * FROM events WHERE id=?',(eid,)).fetchone()
  if not e: c.close(); return ('Événement introuvable',404)
+ aid=e['association_id']; ac=active_context(c)
+ if not (is_super_admin() or (ac.get('type')=='association' and int(ac.get('association_id') or 0)==int(aid or 0) and is_admin())): c.close(); return ('Administration de l’association de l’événement requise',403)
+ ctx=event_form_context(c); ctx['location_picker']=location_picker_markup('event'); ctx['suggested_code']=e['code'] or next_entity_code(c,'events','code','EVT')
  if request.method=='POST':
-  sql='UPDATE events SET title=?,event_type=?,status=?,start_at=?,end_at=?,location=?,project_id=?,zone_id=?,team_id=?,max_participants=?,description=?,latitude=?,longitude=?,updated_at=? WHERE id=?'; c.execute(sql,(clean(request.form.get('title')),request.form.get('event_type'),request.form.get('status'),request.form.get('start_at'),request.form.get('end_at') or None,clean(request.form.get('location')) or None,request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('team_id') or None,int(request.form.get('max_participants') or 0),clean(request.form.get('description')) or None,request.form.get('latitude') or None,request.form.get('longitude') or None,datetime.now().isoformat(timespec='minutes'),eid)); c.commit(); c.close(); log_action('edit','event',eid); flash('Événement modifié.'); return redirect('/events/'+str(eid))
+  project_id=request.form.get('project_id') or None; zone_id=request.form.get('zone_id') or None; team_id=request.form.get('team_id') or None
+  ok,msg=validate_operational_links(c,aid,project_id,zone_id,team_id,'can_intervene')
+  if not ok: c.close(); return (msg,403)
+  sql='UPDATE events SET code=COALESCE(code,?),title=?,event_type=?,status=?,start_at=?,end_at=?,location=?,project_id=?,zone_id=?,team_id=?,max_participants=?,description=?,latitude=?,longitude=?,updated_at=? WHERE id=?'; c.execute(sql,(ctx['suggested_code'],clean(request.form.get('title')),request.form.get('event_type'),request.form.get('status'),request.form.get('start_at'),request.form.get('end_at') or None,clean(request.form.get('location')) or None,project_id,zone_id,team_id,int(request.form.get('max_participants') or 0),clean(request.form.get('description')) or None,request.form.get('latitude') or None,request.form.get('longitude') or None,datetime.now().isoformat(timespec='minutes'),eid)); c.commit(); c.close(); log_action('edit','event',eid); flash('Événement modifié.'); return redirect('/events/'+str(eid))
  c.close(); return page('Modifier événement',EVENT_FORM,e=e,cancel_url='/events/'+str(eid),**ctx)
 
 @app.post('/events/<int:eid>/delete')
@@ -1712,24 +2265,48 @@ def volunteer_events():
 @app.route('/missions')
 @login_required
 def missions_page():
- c=db(); q=request.args.get('q','').strip(); status=request.args.get('status',''); priority=request.args.get('priority',''); scope,sp=context_condition('m'); w=['m.active=1',scope]; p=list(sp)
- if q: w.append('(m.code LIKE ? OR m.title LIKE ? OR m.description LIKE ?)'); p += ['%'+q+'%']*3
- if status: w.append('m.status=?'); p.append(status)
- if priority: w.append('m.priority=?'); p.append(priority)
- rows=c.execute("SELECT m.*,p.name project_name,z.name zone_name,t.name team_name,u.name leader_name,(SELECT COUNT(*) FROM mission_participants mp WHERE mp.mission_id=m.id) participant_count FROM missions m LEFT JOIN projects p ON p.id=m.project_id LEFT JOIN zones z ON z.id=m.zone_id LEFT JOIN teams t ON t.id=m.team_id LEFT JOIN users u ON u.id=m.leader_user_id WHERE "+' AND '.join(w)+' ORDER BY CASE m.status WHEN \'En cours\' THEN 1 WHEN \'Planifiée\' THEN 2 ELSE 3 END,m.start_at DESC,m.id DESC',p).fetchall(); c.close()
- return page('Missions',"""<div class="section-title"><h2>Liste des missions</h2>{% if admin %}<a class="btn" href="/missions/new">+ Nouvelle mission</a>{% endif %}</div><form class="card toolbar"><label>Recherche<input name="q" value="{{q}}"></label><label>Statut<select name="status"><option value="">Tous</option>{% for s in ['Planifiée','En cours','Terminée','Annulée'] %}<option {% if status==s %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label><label>Priorité<select name="priority"><option value="">Toutes</option>{% for s in ['Basse','Normale','Haute','Urgente'] %}<option {% if priority==s %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label><button class="btn">Filtrer</button><a class="btn alt" href="/missions">Effacer</a></form><div class="card" style="overflow:auto"><table><tr><th>Code</th><th>Mission</th><th>Date</th><th>Projet / Zone</th><th>Équipe</th><th>Participants</th><th>Priorité</th><th>Progression</th><th>Statut</th><th></th></tr>{% for m in rows %}<tr><td>{{m.code}}</td><td><a href="/missions/{{m.id}}"><b>{{m.title}}</b></a><div class="sub">{{m.mission_type or ''}}</div></td><td>{{m.start_at or '—'}}</td><td>{{m.project_name or '—'}} / {{m.zone_name or '—'}}</td><td>{{m.team_name or '—'}}</td><td>{{m.participant_count}}</td><td>{{m.priority or 'Normale'}}</td><td>{{m.completed_count or 0}} / {{m.target_count or 0}}</td><td><span class="badge {% if m.status=='Terminée' %}good{% elif m.status=='En cours' %}pending{% elif m.status=='Annulée' %}danger{% else %}watch{% endif %}">{{m.status}}</span></td><td><a class="btn alt" href="/missions/{{m.id}}">Ouvrir</a></td></tr>{% else %}<tr><td colspan="10">Aucune mission.</td></tr>{% endfor %}</table></div>""",rows=rows,q=q,status=status,priority=priority,admin=is_admin())
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ opts=common_filter_options(c,f); ctx=active_context(c); ids=[int(x['id']) for x in accessible_filter_projects(c,ctx)]
+ w=['m.active=1']; p=[]
+ if ctx.get('type')=='personal': w.append('m.association_id IS NULL')
+ elif ctx.get('type')=='association':
+  if ids: w.append('m.project_id IN ('+','.join('?'*len(ids))+')'); p.extend(ids)
+  else: w.append('1=0')
+ elif not is_super_admin(): w.append('1=0')
+ if f['q']: w.append('(m.code LIKE ? OR m.title LIKE ? OR m.description LIKE ?)'); p += ['%'+f['q']+'%']*3
+ if f['status']: w.append('m.status=?'); p.append(f['status'])
+ if f['priority']: w.append('m.priority=?'); p.append(f['priority'])
+ if f['action_type']: w.append('m.mission_type=?'); p.append(f['action_type'])
+ if f['project_id']: w.append('m.project_id=?'); p.append(f['project_id'])
+ if f['zone_id']: w.append('m.zone_id=?'); p.append(f['zone_id'])
+ if f['volunteer_id']: w.append('(m.leader_user_id=? OR EXISTS(SELECT 1 FROM mission_participants mpf WHERE mpf.mission_id=m.id AND mpf.user_id=?))'); p += [f['volunteer_id'],f['volunteer_id']]
+ if f['date_from']: w.append('date(m.start_at)>=date(?)'); p.append(f['date_from'])
+ if f['date_to']: w.append('date(m.start_at)<=date(?)'); p.append(f['date_to'])
+ apply_common_geo_filters(w,p,f,'pr')
+ rows=c.execute("SELECT m.*,pr.name project_name,z.name zone_name,t.name team_name,u.name leader_name,(SELECT COUNT(*) FROM mission_participants mp WHERE mp.mission_id=m.id) participant_count FROM missions m LEFT JOIN projects pr ON pr.id=m.project_id LEFT JOIN zones z ON z.id=m.zone_id LEFT JOIN teams t ON t.id=m.team_id LEFT JOIN users u ON u.id=m.leader_user_id WHERE "+' AND '.join(w)+" ORDER BY CASE m.status WHEN 'En cours' THEN 1 WHEN 'Planifiée' THEN 2 ELSE 3 END,m.start_at DESC,m.id DESC",p).fetchall(); c.close()
+ return page('Missions',"""<div class="section-title"><h2>Liste des missions</h2>{% if admin %}<a class="btn" href="/missions/new">+ Nouvelle mission</a>{% endif %}</div><form class="card toolbar"><label>Recherche<input name="q" value="{{f.q}}"></label><label>Wilaya<select name="wilaya_id"><option value="">Toutes</option>{% for x in wilayas %}<option value="{{x.id}}" {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">Toutes</option>{% for x in communes %}<option value="{{x.id}}" {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Projet<select name="project_id"><option value="">Tous</option>{% for x in projects %}<option value="{{x.id}}" {% if f.project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id"><option value="">Toutes</option>{% for x in zones %}<option value="{{x.id}}" {% if f.zone_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Type<select name="action_type"><option value="">Tous</option>{% for x in ['Plantation','Arrosage','Entretien','Inventaire','Nettoyage'] %}<option {% if f.action_type==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Statut<select name="status"><option value="">Tous</option>{% for x in ['Planifiée','En cours','Terminée','Annulée'] %}<option {% if f.status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Priorité<select name="priority"><option value="">Toutes</option>{% for x in ['Basse','Normale','Haute','Urgente'] %}<option {% if f.priority==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Bénévole<select name="volunteer_id"><option value="">Tous</option>{% for x in volunteers %}<option value="{{x.id}}" {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Du<input type="date" name="date_from" value="{{f.date_from}}"></label><label>Au<input type="date" name="date_to" value="{{f.date_to}}"></label><button class="btn">Filtrer</button><a class="btn alt" href="/missions">Effacer</a></form><div class="card" style="overflow:auto"><table><tr><th>Code</th><th>Mission</th><th>Date</th><th>Projet / Zone</th><th>Équipe</th><th>Participants</th><th>Priorité</th><th>Progression</th><th>Statut</th><th></th></tr>{% for m in rows %}<tr><td>{{m.code}}</td><td><a href="/missions/{{m.id}}"><b>{{m.title}}</b></a><div class="sub">{{m.mission_type or ''}}</div></td><td>{{m.start_at or '—'}}</td><td>{{m.project_name or '—'}} / {{m.zone_name or '—'}}</td><td>{{m.team_name or '—'}}</td><td>{{m.participant_count}}</td><td>{{m.priority or 'Normale'}}</td><td>{{m.completed_count or 0}} / {{m.target_count or 0}}</td><td><span class="badge {% if m.status=='Terminée' %}good{% elif m.status=='En cours' %}pending{% elif m.status=='Annulée' %}danger{% else %}watch{% endif %}">{{m.status}}</span></td><td><a class="btn alt" href="/missions/{{m.id}}">Ouvrir</a></td></tr>{% else %}<tr><td colspan="10">Aucune mission.</td></tr>{% endfor %}</table></div>""",rows=rows,f=f,admin=is_admin(),**opts)
 
 @app.route('/missions/new',methods=['GET','POST'])
 @login_required
 def mission_new():
- if not is_admin(): return redirect('/missions')
- c=db(); opts=filter_options(c); ts,tp=context_condition('teams'); teams=c.execute('SELECT * FROM teams WHERE active=1 AND '+ts+' ORDER BY name',tp).fetchall(); us,up=context_user_condition('users'); leaders=c.execute('SELECT id,name FROM users WHERE active=1 AND '+us+' ORDER BY name',up).fetchall(); volunteers=c.execute("SELECT u.id,u.name FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.active=1 AND COALESCE(r.name,u.role) IN ('volunteer','team_leader','coordinator') AND "+context_user_condition('u')[0]+" ORDER BY u.name",context_user_condition('u')[1]).fetchall(); suggested=next_entity_code(c,'missions','code','MISSION')
+ c=db(); ac=active_context(c); aid=ac.get('association_id')
+ if ac.get('type')!='association' or not aid or not is_admin(): c.close(); return ('Administration association requise',403)
+ projects=association_operation_projects(c,aid,'can_manage_missions'); pids=[x['id'] for x in projects]
+ zones=c.execute('SELECT id,name,project_id FROM zones WHERE active=1 AND project_id IN ('+(','.join('?'*len(pids)) if pids else 'NULL')+') ORDER BY name',pids).fetchall() if pids else []
+ teams=c.execute('SELECT * FROM teams WHERE active=1 AND association_id=? ORDER BY name',(aid,)).fetchall(); people=association_operational_people(c,aid); leaders=people; volunteers=people; suggested=next_entity_code(c,'missions','code','MISSION'); opts=filter_options(c); opts.update(projects=projects,zones=zones)
  if request.method=='POST':
-  now=datetime.now().isoformat(timespec='minutes'); code=clean(request.form.get('code')) or suggested
-  cur=c.execute("INSERT INTO missions(code,title,mission_type,status,priority,project_id,zone_id,team_id,leader_user_id,start_at,end_at,target_count,completed_count,description,report,latitude,longitude,active,created_by_user_id,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,NULL,?,?,1,?,?,?,?)",(code,request.form['title'].strip(),request.form.get('mission_type'),request.form.get('status') or 'Planifiée',request.form.get('priority') or 'Normale',request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('team_id') or None,request.form.get('leader_user_id') or None,request.form.get('start_at'),request.form.get('end_at'),request.form.get('target_count') or 0,request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,session['uid'],now,now,current_association_id())); mid=cur.lastrowid
-  for uid in request.form.getlist('participant_ids'): c.execute("INSERT OR IGNORE INTO mission_participants(mission_id,user_id,attendance_status,created_at) VALUES(?,?,'Invité',?)",(mid,uid,now))
-  c.commit(); c.close(); log_action('create','mission',mid,request.form['title']); notify('Nouvelle mission',request.form['title'],'/missions/'+str(mid),request.form.get('leader_user_id') or None); flash('Mission créée.'); return redirect('/missions/'+str(mid))
- c.close(); return page('Nouvelle mission',"""<div class="card"><form method="post" class="form" id="missionForm"><label>Code<input name="code" value="{{suggested}}" readonly></label><label>Titre<input name="title" required></label><label>Type<select name="mission_type"><option>Plantation</option><option>Arrosage</option><option>Entretien</option><option>Inventaire</option><option>Nettoyage</option></select></label><label>Statut<select name="status"><option>Planifiée</option><option>En cours</option><option>Terminée</option><option>Annulée</option></select></label><label>Priorité<select name="priority"><option>Basse</option><option selected>Normale</option><option>Haute</option><option>Urgente</option></select></label><label>Projet<select name="project_id" id="missionProject"><option value="">—</option>{% for x in projects %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id" id="missionZone"><option value="">—</option></select></label><label>Équipe<select name="team_id" id="missionTeam"><option value="">—</option>{% for x in teams %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Responsable<select name="leader_user_id" id="missionLeader"><option value="">—</option>{% for x in leaders %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at"></label><label>Fin<input type="datetime-local" name="end_at"></label><label>Objectif<input type="number" min="0" name="target_count"></label><label>Latitude<input id="missionLat" type="number" step="any" name="latitude"></label><label>Longitude<input id="missionLon" type="number" step="any" name="longitude"></label><label class="full">Participants<select name="participant_ids" multiple size="7">{% for x in volunteers %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label class="full">Description<textarea name="description"></textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/missions">Annuler</a></div></form></div><script>async function missionZones(){missionZone.innerHTML='<option value="">—</option>';if(!missionProject.value)return;let rows=await fetch('/api/projects/'+missionProject.value+'/zones').then(r=>r.json());rows.forEach(x=>missionZone.add(new Option(x.name,x.id)))}async function missionLeaderFromTeam(){if(!missionTeam.value)return;let d=await fetch('/api/teams/'+missionTeam.value+'/leader').then(r=>r.json());if(d.leader_user_id)missionLeader.value=d.leader_user_id;if(d.project_id){missionProject.value=d.project_id;await missionZones();if(d.zone_id)missionZone.value=d.zone_id}}missionProject.addEventListener('change',missionZones);missionTeam.addEventListener('change',missionLeaderFromTeam);</script>""",suggested=suggested,teams=teams,leaders=leaders,volunteers=volunteers,**opts)
+  project_id=request.form.get('project_id') or None; zone_id=request.form.get('zone_id') or None; team_id=request.form.get('team_id') or None; leader=request.form.get('leader_user_id') or None; participants=set(request.form.getlist('participant_ids'))
+  if leader: participants.add(str(leader))
+  ok,msg=validate_operational_links(c,aid,project_id,zone_id,team_id,'can_manage_missions'); bad=validate_association_users(c,participants,aid)
+  if not ok or bad: c.close(); return ((msg or 'Participant non autorisé : '+','.join(map(str,bad))),403)
+  now=datetime.now().isoformat(timespec='minutes'); code=suggested
+  try:
+   cur=c.execute("INSERT INTO missions(code,title,mission_type,status,priority,project_id,zone_id,team_id,leader_user_id,start_at,end_at,target_count,completed_count,description,report,latitude,longitude,active,created_by_user_id,created_at,updated_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,NULL,?,?,1,?,?,?,?)",(code,request.form['title'].strip(),request.form.get('mission_type'),request.form.get('status') or 'Planifiée',request.form.get('priority') or 'Normale',project_id,zone_id,team_id,leader,request.form.get('start_at'),request.form.get('end_at'),request.form.get('target_count') or 0,request.form.get('description'),request.form.get('latitude') or None,request.form.get('longitude') or None,session['uid'],now,now,aid)); mid=cur.lastrowid
+  except sqlite3.IntegrityError: c.close(); return ('Code mission déjà utilisé',409)
+  for uid in participants: c.execute("INSERT OR IGNORE INTO mission_participants(mission_id,user_id,attendance_status,created_at) VALUES(?,?,'Invité',?)",(mid,uid,now))
+  c.commit(); c.close(); log_action('create','mission',mid,request.form['title']); notify('Nouvelle mission',request.form['title'],'/missions/'+str(mid),leader); flash('Mission créée.'); return redirect('/missions/'+str(mid))
+ c.close(); return page('Nouvelle mission',"""<div class="card"><form method="post" class="form" id="missionForm"><label>Code<input name="code" value="{{suggested}}" readonly></label><label>Titre<input name="title" required></label><label>Type<select name="mission_type"><option>Plantation</option><option>Arrosage</option><option>Entretien</option><option>Inventaire</option><option>Nettoyage</option></select></label><label>Statut<select name="status"><option>Planifiée</option><option>En cours</option><option>Terminée</option><option>Annulée</option></select></label><label>Priorité<select name="priority"><option>Basse</option><option selected>Normale</option><option>Haute</option><option>Urgente</option></select></label><label>Projet<select name="project_id" id="missionProject"><option value="">—</option>{% for x in projects %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id" id="missionZone"><option value="">—</option></select></label><label>Équipe<select name="team_id" id="missionTeam"><option value="">—</option>{% for x in teams %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Responsable<select name="leader_user_id" id="missionLeader"><option value="">—</option>{% for x in leaders %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at"></label><label>Fin<input type="datetime-local" name="end_at"></label><label>Objectif<input type="number" min="0" name="target_count"></label><label>Latitude<input id="missionLat" type="number" step="any" name="latitude"></label><label>Longitude<input id="missionLon" type="number" step="any" name="longitude"></label><div class="full">{{location_picker|safe}}</div><label class="full">Participants<select name="participant_ids" multiple size="7">{% for x in volunteers %}<option value="{{x.id}}">{{x.name}}</option>{% endfor %}</select></label><label class="full">Description<textarea name="description"></textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/missions">Annuler</a></div></form></div><script>async function missionZones(){missionZone.innerHTML='<option value="">—</option>';if(!missionProject.value)return;let rows=await fetch('/api/projects/'+missionProject.value+'/zones').then(r=>r.json());rows.forEach(x=>missionZone.add(new Option(x.name,x.id)))}async function missionLeaderFromTeam(){if(!missionTeam.value)return;let d=await fetch('/api/teams/'+missionTeam.value+'/leader').then(r=>r.json());if(d.leader_user_id)missionLeader.value=d.leader_user_id;if(d.project_id){missionProject.value=d.project_id;await missionZones();if(d.zone_id)missionZone.value=d.zone_id}}missionProject.addEventListener('change',missionZones);missionTeam.addEventListener('change',missionLeaderFromTeam);</script>""",suggested=suggested,teams=teams,leaders=leaders,volunteers=volunteers,location_picker=location_picker_markup('mission'),**opts)
 
 @app.route('/missions/<int:mid>')
 @login_required
@@ -1749,7 +2326,7 @@ def mission_detail(mid):
 <div class="grid two"><div class="card"><h3>Informations</h3><p><b>Type :</b> {{m.mission_type or '—'}}</p><p><b>Prévue :</b> {{m.start_at or '—'}} → {{m.end_at or '—'}}</p><p><b>Réelle :</b> {{m.actual_start_at or 'Non commencée'}} → {{m.actual_end_at or '—'}}</p><p><b>Projet / Zone :</b> {{m.project_name or '—'}} / {{m.zone_name or '—'}}</p><p><b>Équipe :</b> {{m.team_name or '—'}}</p><p><b>Responsable :</b> {{m.leader_name or '—'}}</p><p>{{m.description or ''}}</p></div><div class="card"><h3>Rapport</h3><p>{{m.completion_notes or m.report or 'Aucun rapport enregistré.'}}</p><p class="sub">GPS : {{m.latitude or '—'}}, {{m.longitude or '—'}}</p></div></div>
 {% if can_execute or admin %}<div class="grid two"><div class="card"><h3>Ajouter une intervention</h3><form method="post" action="/missions/{{m.id}}/actions" class="form"><label>Type<select name="action_type"><option>Progression</option><option>Plantation</option><option>Arrosage</option><option>Contrôle</option><option>Entretien</option><option>Signalement</option></select></label><label>Quantité<input type="number" min="0" name="quantity" value="0"></label><label class="full">Détails<textarea name="details" required></textarea></label><label>Latitude<input name="latitude" type="number" step="any"></label><label>Longitude<input name="longitude" type="number" step="any"></label><div class="full"><button class="btn">Enregistrer</button></div></form></div><div class="card"><h3>Ajouter une photo</h3><form method="post" action="/missions/{{m.id}}/photos" class="form"><label class="full">URL ou donnée de la photo<input name="photo_url" required placeholder="Photo prise ou choisie"></label><label class="full">Légende<input name="caption"></label><div class="full"><button class="btn">Ajouter la photo</button></div></form></div></div>{% endif %}
 <div class="grid two"><div class="card"><h3>Journal de mission</h3>{% for a in actions %}<div class="priority"><b>{{a.action_type}} — {{a.user_name or 'Système'}}</b><span>{{a.created_at}}{% if a.quantity %} • {{a.quantity}} traité(s){% endif %}</span><div>{{a.details or ''}}</div></div>{% else %}<p class="sub">Aucune intervention enregistrée.</p>{% endfor %}</div><div class="card"><h3>Photos ({{photos|length}})</h3>{% for ph in photos %}<div class="priority"><b>{{ph.caption or 'Photo de mission'}}</b><span>{{ph.user_name or '—'}} • {{ph.created_at}}</span><a href="{{ph.photo_url}}" target="_blank">Voir la photo</a></div>{% else %}<p class="sub">Aucune photo.</p>{% endfor %}</div></div>
-<div class="card"><h3>Participants ({{participants|length}})</h3><table><tr><th>Nom</th><th>Téléphone</th><th>Présence</th>{% if admin %}<th>Action</th>{% endif %}</tr>{% for p in participants %}<tr><td>{{p.name}}</td><td>{{p.phone}}</td><td>{{p.attendance_status}}</td>{% if admin %}<td><form method="post" action="/missions/{{m.id}}/participants/{{p.user_id}}"><select name="attendance_status"><option {% if p.attendance_status=='Invité' %}selected{% endif %}>Invité</option><option {% if p.attendance_status=='Confirmé' %}selected{% endif %}>Confirmé</option><option {% if p.attendance_status=='Présent' %}selected{% endif %}>Présent</option><option {% if p.attendance_status=='Absent' %}selected{% endif %}>Absent</option></select><button class="btn alt">Enregistrer</button></form></td>{% endif %}</tr>{% else %}<tr><td colspan="4">Aucun participant affecté.</td></tr>{% endfor %}</table></div>""",m=m,participants=participants,actions=actions,photos=photos,admin=is_admin(),can_execute=can_execute)
+<div class="card"><h3>Participants ({{participants|length}})</h3><table><tr><th>Nom</th><th>Téléphone</th><th>Présence</th>{% if admin %}<th>Action</th>{% endif %}</tr>{% for p in participants %}<tr><td>{{p.name}}</td><td>{{p.phone}}</td><td>{{p.attendance_status}}</td>{% if admin %}<td><form method="post" action="/missions/{{m.id}}/participants/{{p.user_id}}"><select name="attendance_status"><option {% if p.attendance_status=='Invité' %}selected{% endif %}>Invité</option><option {% if p.attendance_status=='Confirmé' %}selected{% endif %}>Confirmé</option><option {% if p.attendance_status=='Présent' %}selected{% endif %}>Présent</option><option {% if p.attendance_status=='Absent' %}selected{% endif %}>Absent</option></select><button class="btn alt">Enregistrer</button></form></td>{% endif %}</tr>{% else %}<tr><td colspan="4">Aucun participant affecté.</td></tr>{% endfor %}</table></div>""",m=m,participants=participants,actions=actions,photos=photos,admin=(is_admin() and (is_super_admin() or int(active_context().get('association_id') or 0)==int(m['association_id'] or 0))),can_execute=can_execute)
 
 @app.post('/missions/<int:mid>/start')
 @login_required
@@ -1787,16 +2364,20 @@ def mission_add_photo(mid):
 @app.route('/missions/<int:mid>/edit',methods=['GET','POST'])
 @login_required
 def mission_edit(mid):
- if not is_admin(): return redirect('/missions/'+str(mid))
- c=db(); m=c.execute('SELECT * FROM missions WHERE id=?',(mid,)).fetchone(); opts=filter_options(c); teams=c.execute('SELECT * FROM teams WHERE active=1 ORDER BY name').fetchall(); leaders=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall(); volunteers=c.execute('SELECT id,name FROM users WHERE active=1 ORDER BY name').fetchall(); selected={r['user_id'] for r in c.execute('SELECT user_id FROM mission_participants WHERE mission_id=?',(mid,))}
+ c=db(); m=c.execute('SELECT * FROM missions WHERE id=?',(mid,)).fetchone()
  if not m: c.close(); return ('Mission introuvable',404)
+ aid=m['association_id']; ac=active_context(c)
+ if not (is_super_admin() or (ac.get('type')=='association' and int(ac.get('association_id') or 0)==int(aid or 0) and is_admin())): c.close(); return ('Administration de l’association de la mission requise',403)
+ projects=association_operation_projects(c,aid,'can_manage_missions'); pids=[x['id'] for x in projects]; zones=c.execute('SELECT id,name,project_id FROM zones WHERE active=1 AND project_id IN ('+(','.join('?'*len(pids)) if pids else 'NULL')+') ORDER BY name',pids).fetchall() if pids else []; teams=c.execute('SELECT * FROM teams WHERE active=1 AND association_id=? ORDER BY name',(aid,)).fetchall(); people=association_operational_people(c,aid); leaders=people; volunteers=people; selected={r['user_id'] for r in c.execute('SELECT user_id FROM mission_participants WHERE mission_id=?',(mid,))}; opts=filter_options(c); opts.update(projects=projects,zones=zones)
  if request.method=='POST':
-  now=datetime.now().isoformat(timespec='minutes'); c.execute("UPDATE missions SET code=?,title=?,mission_type=?,status=?,priority=?,project_id=?,zone_id=?,team_id=?,leader_user_id=?,start_at=?,end_at=?,target_count=?,completed_count=?,description=?,report=?,latitude=?,longitude=?,updated_at=? WHERE id=?",(request.form['code'].strip(),request.form['title'].strip(),request.form.get('mission_type'),request.form.get('status'),request.form.get('priority'),request.form.get('project_id') or None,request.form.get('zone_id') or None,request.form.get('team_id') or None,request.form.get('leader_user_id') or None,request.form.get('start_at'),request.form.get('end_at'),request.form.get('target_count') or 0,request.form.get('completed_count') or 0,request.form.get('description'),request.form.get('report'),request.form.get('latitude') or None,request.form.get('longitude') or None,now,mid)); c.execute('DELETE FROM mission_participants WHERE mission_id=?',(mid,));
-  for uid in request.form.getlist('participant_ids'): c.execute("INSERT INTO mission_participants(mission_id,user_id,attendance_status,created_at) VALUES(?,?,'Invité',?)",(mid,uid,now))
-  c.commit(); c.close(); log_action('edit','mission',mid,request.form['status']);
-  if request.form.get('status')=='Terminée': notify('Mission terminée',request.form['title'],'/missions/'+str(mid),None)
-  flash('Mission modifiée.'); return redirect('/missions/'+str(mid))
- c.close(); return page('Modifier mission',"""<div class="card"><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Code<input name="code" value="{{m.code}}" required></label><label>Titre<input name="title" value="{{m.title}}" required></label><label>Type<select name="mission_type">{% for x in ['Plantation','Arrosage','Entretien','Inventaire','Nettoyage'] %}<option {% if m.mission_type==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Statut<select name="status">{% for x in ['Planifiée','En cours','Terminée','Annulée'] %}<option {% if m.status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Priorité<select name="priority">{% for x in ['Basse','Normale','Haute','Urgente'] %}<option {% if m.priority==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Projet<select name="project_id"><option value="">—</option>{% for x in projects %}<option value="{{x.id}}" {% if m.project_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id"><option value="">—</option>{% for x in zones %}<option value="{{x.id}}" {% if m.zone_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Équipe<select name="team_id"><option value="">—</option>{% for x in teams %}<option value="{{x.id}}" {% if m.team_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Responsable<select name="leader_user_id"><option value="">—</option>{% for x in leaders %}<option value="{{x.id}}" {% if m.leader_user_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at" value="{{m.start_at or ''}}"></label><label>Fin<input type="datetime-local" name="end_at" value="{{m.end_at or ''}}"></label><label>Objectif<input type="number" min="0" name="target_count" value="{{m.target_count or 0}}"></label><label>Réalisé<input type="number" min="0" name="completed_count" value="{{m.completed_count or 0}}"></label><label>Latitude<input name="latitude" value="{{m.latitude or ''}}"></label><label>Longitude<input name="longitude" value="{{m.longitude or ''}}"></label><label class="full">Participants<select name="participant_ids" multiple size="7">{% for x in volunteers %}<option value="{{x.id}}" {% if x.id in selected %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label class="full">Description<textarea name="description">{{m.description or ''}}</textarea></label><label class="full">Rapport de mission<textarea name="report">{{m.report or ''}}</textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/missions/{{m.id}}">Annuler</a></div></form></div>""",m=m,teams=teams,leaders=leaders,selected=selected,**opts)
+  project_id=request.form.get('project_id') or None; zone_id=request.form.get('zone_id') or None; team_id=request.form.get('team_id') or None; leader=request.form.get('leader_user_id') or None; participants=set(request.form.getlist('participant_ids'))
+  if leader: participants.add(str(leader))
+  ok,msg=validate_operational_links(c,aid,project_id,zone_id,team_id,'can_manage_missions'); bad=validate_association_users(c,participants,aid)
+  if not ok or bad: c.close(); return ((msg or 'Participant non autorisé : '+','.join(map(str,bad))),403)
+  now=datetime.now().isoformat(timespec='minutes'); c.execute("UPDATE missions SET title=?,mission_type=?,status=?,priority=?,project_id=?,zone_id=?,team_id=?,leader_user_id=?,start_at=?,end_at=?,target_count=?,completed_count=?,description=?,report=?,latitude=?,longitude=?,updated_at=? WHERE id=?",(request.form['title'].strip(),request.form.get('mission_type'),request.form.get('status'),request.form.get('priority'),project_id,zone_id,team_id,leader,request.form.get('start_at'),request.form.get('end_at'),request.form.get('target_count') or 0,request.form.get('completed_count') or 0,request.form.get('description'),request.form.get('report'),request.form.get('latitude') or None,request.form.get('longitude') or None,now,mid)); c.execute('DELETE FROM mission_participants WHERE mission_id=?',(mid,))
+  for uid in participants: c.execute("INSERT INTO mission_participants(mission_id,user_id,attendance_status,created_at) VALUES(?,?,'Invité',?)",(mid,uid,now))
+  c.commit(); c.close(); log_action('edit','mission',mid,request.form['status']); flash('Mission modifiée.'); return redirect('/missions/'+str(mid))
+ c.close(); return page('Modifier mission',"""<div class="card"><form method="post" class="form" id="missionEdit"><label>Code<input value="{{m.code}}" readonly></label><label>Titre<input name="title" value="{{m.title}}" required></label><label>Type<select name="mission_type">{% for x in ['Plantation','Arrosage','Entretien','Inventaire','Nettoyage'] %}<option {% if m.mission_type==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Statut<select name="status">{% for x in ['Planifiée','En cours','Terminée','Annulée'] %}<option {% if m.status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Priorité<select name="priority">{% for x in ['Basse','Normale','Haute','Urgente'] %}<option {% if m.priority==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Projet<select name="project_id" id="missionProject"><option value="">—</option>{% for x in projects %}<option value="{{x.id}}" {% if m.project_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name="zone_id" id="missionZone"><option value="">—</option>{% for x in zones %}{% if x.project_id==m.project_id %}<option value="{{x.id}}" {% if m.zone_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endif %}{% endfor %}</select></label><label>Équipe<select name="team_id"><option value="">—</option>{% for x in teams %}<option value="{{x.id}}" {% if m.team_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Responsable<select name="leader_user_id"><option value="">—</option>{% for x in leaders %}<option value="{{x.id}}" {% if m.leader_user_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Début<input type="datetime-local" name="start_at" value="{{m.start_at or ''}}"></label><label>Fin<input type="datetime-local" name="end_at" value="{{m.end_at or ''}}"></label><label>Objectif<input type="number" min="0" name="target_count" value="{{m.target_count or 0}}"></label><label>Réalisé<input type="number" min="0" name="completed_count" value="{{m.completed_count or 0}}"></label><label>Latitude<input name="latitude" value="{{m.latitude or ''}}"></label><label>Longitude<input name="longitude" value="{{m.longitude or ''}}"></label><div class="full">{{location_picker|safe}}</div><label class="full">Participants<select name="participant_ids" multiple size="7">{% for x in volunteers %}<option value="{{x.id}}" {% if x.id in selected %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label class="full">Description<textarea name="description">{{m.description or ''}}</textarea></label><label class="full">Rapport<textarea name="report">{{m.report or ''}}</textarea></label><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/missions/{{m.id}}">Annuler</a></div></form></div><script>async function missionZones(){let old=missionZone.value;missionZone.innerHTML='<option value="">—</option>';if(!missionProject.value)return;let rows=await fetch('/api/projects/'+missionProject.value+'/zones').then(r=>r.json());rows.forEach(x=>{let o=new Option(x.name,x.id);if(String(x.id)==String(old))o.selected=true;missionZone.add(o)})}missionProject.addEventListener('change',missionZones);</script>""",m=m,teams=teams,leaders=leaders,volunteers=volunteers,selected=selected,location_picker=location_picker_markup('missionedit'),**opts)
 
 @app.post('/missions/<int:mid>/participants/<int:uid>')
 @login_required
@@ -1828,24 +2409,24 @@ def notifications_page():
  if category: where.append('category=?'); params.append(category)
  if unread_only: where.append('is_read=0')
  rows=c.execute('SELECT * FROM notifications WHERE '+' AND '.join(where)+' ORDER BY is_read,created_at DESC LIMIT 150',params).fetchall(); unread=c.execute('SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0',(session['uid'],)).fetchone()['n']; categories=c.execute("SELECT DISTINCT COALESCE(category,'Général') category FROM notifications WHERE user_id=? OR user_id IS NULL ORDER BY category",(session['uid'],)).fetchall(); c.close()
- return page('Notifications',"""<div class="section-title"><h2>Centre de notifications <span class="badge pending">{{unread}} non lues</span></h2><a class="btn" href="/action-center">Centre d’actions</a></div><form class="card toolbar"><label>Catégorie<select name="category"><option value="">Toutes</option>{% for c in categories %}<option {% if category==c.category %}selected{% endif %}>{{c.category}}</option>{% endfor %}</select></label><label>État<select name="unread"><option value="0">Toutes</option><option value="1" {% if unread_only %}selected{% endif %}>Non lues seulement</option></select></label><button class="btn">Filtrer</button><a class="btn alt" href="/notifications">Effacer</a></form><form method="post" action="/notifications/bulk" class="card"><div class="bulk-bar"><label><input type="checkbox" id="selectAll" onclick="toggleAll(this)"> Tout sélectionner</label> <button class="btn" name="decision" value="accept">✓ Accepter la sélection</button> <button class="btn red" name="decision" value="reject">✕ Refuser la sélection</button></div><div style="overflow:auto"><table><tr><th></th><th>État</th><th>Catégorie</th><th>Date</th><th>Titre</th><th>Message</th><th>Actions</th></tr>{% for n in rows %}<tr><td><input class="notif-check" type="checkbox" name="notification_ids" value="{{n.id}}" {% if not n.action_type %}disabled{% endif %}></td><td>{% if n.is_read %}<span class="badge good">Lue</span>{% else %}<span class="badge pending">Nouvelle</span>{% endif %}</td><td><span class="badge watch">{{n.category or 'Général'}}</span></td><td>{{n.created_at}}</td><td><b>{{n.title}}</b>{% if n.decision %}<div class="sub">Décision : {{n.decision}}</div>{% endif %}</td><td>{{n.message or ''}}</td><td><div class="quick-actions">{% if n.action_type and not n.decision %}<button class="btn" formaction="/notifications/{{n.id}}/decide/accept" formmethod="post">Accepter</button><button class="btn red" formaction="/notifications/{{n.id}}/decide/reject" formmethod="post">Refuser</button>{% endif %}{% if n.link %}<a class="btn alt" href="/notifications/{{n.id}}/open">Ouvrir</a>{% else %}<button class="btn alt" formaction="/notifications/{{n.id}}/read" formmethod="post">Marquer lue</button>{% endif %}</div></td></tr>{% else %}<tr><td colspan="7">Aucune notification.</td></tr>{% endfor %}</table></div></form><script>function toggleAll(x){document.querySelectorAll('.notif-check:not(:disabled)').forEach(c=>c.checked=x.checked)}</script>""",rows=rows,unread=unread,categories=categories,category=category,unread_only=unread_only)
+ return page('Notifications',"""<div class="section-title"><h2>Centre de notifications <span class="badge pending">{{unread}} non lues</span></h2><a class="btn" href="/action-center">Centre d’actions</a></div><div class="notif-help">Ouvrir cette liste ne marque aucune notification comme lue. Le compteur diminue seulement après ouverture explicite d’une notification, marquage manuel comme lue, ou traitement réel d’une demande.</div><form class="card toolbar"><label>Catégorie<select name="category"><option value="">Toutes</option>{% for c in categories %}<option {% if category==c.category %}selected{% endif %}>{{c.category}}</option>{% endfor %}</select></label><label>État<select name="unread"><option value="0">Toutes</option><option value="1" {% if unread_only %}selected{% endif %}>Non lues seulement</option></select></label><button class="btn">Filtrer</button><a class="btn alt" href="/notifications">Effacer</a></form><form method="post" action="/notifications/bulk" class="card"><div class="bulk-bar"><label><input type="checkbox" id="selectAll" onclick="toggleAll(this)"> Tout sélectionner</label> <button class="btn" name="decision" value="accept">✓ Accepter la sélection</button> <button class="btn red" name="decision" value="reject">✕ Refuser la sélection</button></div><div style="overflow:auto"><table><tr><th></th><th>État</th><th>Catégorie</th><th>Date</th><th>Titre</th><th>Message</th><th>Actions</th></tr>{% for n in rows %}<tr><td><input class="notif-check" type="checkbox" name="notification_ids" value="{{n.id}}" {% if not n.action_type %}disabled{% endif %}></td><td>{% if n.is_read %}<span class="badge good">Lue</span>{% else %}<span class="badge pending">Nouvelle</span>{% endif %}</td><td><span class="badge watch">{{n.category or 'Général'}}</span></td><td>{{n.created_at}}</td><td><b>{{n.title}}</b><div class="notif-state">{% if n.decision %}<span class="badge good">Décision : {{n.decision}}</span>{% endif %}{% if n.processed_at %}<span class="sub">Traitée {{n.processed_at}}</span>{% elif n.read_at %}<span class="sub">Lue {{n.read_at}}</span>{% endif %}</div></td><td>{{n.message or ''}}</td><td><div class="quick-actions">{% if n.action_type and not n.decision %}<button class="btn" formaction="/notifications/{{n.id}}/decide/accept" formmethod="post">Accepter</button><button class="btn red" formaction="/notifications/{{n.id}}/decide/reject" formmethod="post">Refuser</button>{% endif %}{% if n.link %}<a class="btn alt" href="/notifications/{{n.id}}/open">Ouvrir</a>{% else %}<button class="btn alt" formaction="/notifications/{{n.id}}/read" formmethod="post">Marquer lue</button>{% endif %}</div></td></tr>{% else %}<tr><td colspan="7">Aucune notification.</td></tr>{% endfor %}</table></div></form><script>function toggleAll(x){document.querySelectorAll('.notif-check:not(:disabled)').forEach(c=>c.checked=x.checked)}</script>""",rows=rows,unread=unread,categories=categories,category=category,unread_only=unread_only)
 
 @app.post('/notifications/read-all')
 @login_required
 def notifications_read_all():
- c=db(); c.execute('UPDATE notifications SET is_read=1 WHERE user_id=? OR user_id IS NULL',(session['uid'],)); c.commit(); c.close(); return redirect('/notifications')
+ c=db(); now=datetime.now().isoformat(timespec='minutes'); cur=c.execute("UPDATE notifications SET is_read=1,read_at=COALESCE(read_at,?) WHERE (user_id=? OR user_id IS NULL) AND is_read=0 AND action_type IS NULL",(now,session['uid'])); c.commit(); c.close(); flash(f'{cur.rowcount} notification(s) informative(s) marquée(s) comme lue(s).','success'); return redirect('/notifications')
 
 @app.post('/notifications/<int:nid>/read')
 @login_required
 def notification_read(nid):
- c=db(); c.execute('UPDATE notifications SET is_read=1 WHERE id=? AND (user_id=? OR user_id IS NULL)',(nid,session['uid'])); c.commit(); c.close(); return redirect('/notifications')
+ c=db(); now=datetime.now().isoformat(timespec='minutes'); cur=c.execute('UPDATE notifications SET is_read=1,read_at=COALESCE(read_at,?) WHERE id=? AND (user_id=? OR user_id IS NULL)',(now,nid,session['uid'])); c.commit(); c.close(); flash('Notification marquée comme lue.','success' if cur.rowcount else 'warning'); return redirect('/notifications')
 
 @app.route('/notifications/<int:nid>/open')
 @login_required
 def notification_open(nid):
  c=db(); n=c.execute('SELECT * FROM notifications WHERE id=? AND (user_id=? OR user_id IS NULL)',(nid,session['uid'])).fetchone()
  if not n: c.close(); return redirect('/notifications')
- c.execute('UPDATE notifications SET is_read=1 WHERE id=?',(nid,)); c.commit(); link=n['link']; c.close(); return redirect(link or '/notifications')
+ now=datetime.now().isoformat(timespec='minutes'); c.execute('UPDATE notifications SET is_read=1,read_at=COALESCE(read_at,?) WHERE id=?',(now,nid)); c.commit(); link=n['link']; c.close(); return redirect(link or '/notifications')
 
 @app.route('/search')
 @login_required
@@ -1893,8 +2474,10 @@ def zone_planting_series(zid):
  c=db(); z=c.execute("SELECT z.*,p.name project_name FROM zones z LEFT JOIN projects p ON p.id=z.project_id WHERE z.id=? AND z.active=1",(zid,)).fetchone(); species=c.execute('SELECT id,name_fr FROM species WHERE active=1 ORDER BY name_fr').fetchall()
  if not z: c.close(); return ('Zone introuvable',404)
  if request.method=='POST':
+  ok_assign,msg_assign,p0,z0=validate_tree_assignment(c,z['project_id'],zid)
+  if not ok_assign: c.close(); flash(msg_assign); return redirect(f'/zones/{zid}/planting-series')
   now=datetime.now().isoformat(timespec='minutes'); approval='approved' if is_admin() else 'pending'; code=None; qr=None
-  cur=c.execute('INSERT INTO trees(species_id,project_id,zone_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,gps_accuracy,health_status,watering_status,approval_status,approved_by_user_id,approved_at,planting_type,notes,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)',(request.form['species_id'],z['project_id'],zid,request.form.get('planted_at') or date.today().isoformat(),session['uid'],session['name'],request.form.get('latitude') or None,request.form.get('longitude') or None,request.form.get('gps_accuracy') or None,'Bon','À jour',approval,session['uid'] if approval=='approved' else None,now if approval=='approved' else None,'série',request.form.get('notes'),now)); tid=cur.lastrowid
+  cur=c.execute('INSERT INTO trees(species_id,project_id,zone_id,wilaya_id,commune_id,association_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,gps_accuracy,health_status,watering_status,approval_status,approved_by_user_id,approved_at,planting_type,notes,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)',(request.form['species_id'],z['project_id'],zid,p0['wilaya_id'],p0['commune_id'],p0['association_id'],request.form.get('planted_at') or date.today().isoformat(),session['uid'],session['name'],request.form.get('latitude') or None,request.form.get('longitude') or None,request.form.get('gps_accuracy') or None,'Bon','À jour',approval,session['uid'] if approval=='approved' else None,now if approval=='approved' else None,'série',request.form.get('notes'),now)); tid=cur.lastrowid
   if approval=='approved':
    code=f'TREE-{tid:05d}'; qr=f'QR-{code}'; c.execute('UPDATE trees SET tree_code=?,qr_code=? WHERE id=?',(code,qr,tid))
   c.commit(); c.close(); log_action('plant_series','tree',tid,f'zone {zid}'); flash('Arbre enregistré. Le formulaire reste ouvert pour le suivant.'); return redirect(f'/zones/{zid}/planting-series?last={tid}')
@@ -2462,7 +3045,7 @@ def agent_payment():
  c.close(); body="""<div class='card'><p>Cotisations : <b>{{'%.2f'|format(cot)}} DA</b> — Dons : <b>{{'%.2f'|format(dons)}} DA</b></p><form method='post' class='form'><label>Agent<select name='agent_id'>{% for a in agents %}<option value='{{a.id}}'>{{a.name}}</option>{% endfor %}</select></label><label>Travail<select name='work_type'><option>Plantation</option><option>Arrosage</option><option>Entretien</option><option>Nettoyage</option><option>Transport</option><option>Autre</option></select></label><label>Période<input name='period_label'></label><label>Jours<input type='number' step='0.5' name='days'></label><label>Heures<input type='number' step='0.5' name='hours'></label><label>Montant total (DA)<input type='number' step='0.01' min='0.01' name='total_amount' required></label><label>Source<select name='source'><option value='Automatique'>Mixte automatique (cotisations puis dons)</option><option>Cotisations</option><option>Dons</option></select></label><label>Date<input type='date' name='payment_date' value='{{today}}'></label><label>Mode<select name='payment_method'><option>Espèces</option><option>Virement</option><option>Chèque</option></select></label><label class='full'>Justificatif obligatoire<input name='justification' required></label><label class='full'>Notes<textarea name='notes'></textarea></label><div class='full'><button class='btn'>Payer et imprimer</button></div></form></div>"""; return page('Paiement agent',body,cot=cot,dons=dons,agents=agents,projects=projects,zones=zones,today=date.today().isoformat())
 
 PRINT_STYLE="""<style>@page{size:A4;margin:12mm}body{font-family:Arial,sans-serif;color:#111}h1,h2{text-align:center}.doc{border:1px solid #333;padding:18px}.row{display:flex;justify-content:space-between;margin:10px 0}.sign{display:flex;justify-content:space-between;margin-top:55px}.no-print{margin:12px}@media print{.no-print{display:none}}</style>"""
-def print_doc(title,content): return '<!doctype html><html><head><meta charset="utf-8"><title>'+title+'</title>'+PRINT_STYLE+'</head><body><button class="no-print" onclick="window.print()">Imprimer</button>'+content+'</body></html>'
+def print_doc(title,content): return '<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><title>'+tr(title)+'</title>'+PRINT_STYLE+LOT11_STYLE+'</head><body><button class="no-print" onclick="window.print()">'+tr('Imprimer')+'</button>'+content+i18n_script()+'</body></html>'
 
 @app.route('/members/<int:mid>/print-form')
 @login_required
@@ -2531,6 +3114,9 @@ def reject_tree_change(rid):
 
 # --- v1.8.0 Alpha 4 : interface publique et encyclopédie ---
 def public_page(title, body, **ctx):
+ # Lot 10 — aucun espace public ne reste affiché après authentification.
+ if session.get('uid'):
+  return redirect('/' if is_admin() else '/volunteer')
  if session.get('uid'):
   account_link='/'+('' if is_admin() else 'volunteer')
   auth_desktop=f"<a class='btn alt' href='{account_link}'>🏠 Mon accueil</a><a class='btn red' href='/logout?next=/public'>Déconnexion</a>"
@@ -2541,7 +3127,7 @@ def public_page(title, body, **ctx):
  nav="""<header class='public-header'><div class='public-shell' style='width:100%;display:flex;align-items:center;justify-content:space-between;gap:16px'><a class='public-brand' href='/public'>🌳 <span>MyTree</span> 🇩🇿</a><nav class='public-nav'><a class='btn alt' href='/public'>Accueil</a><a class='btn alt' href='/public/associations'>Associations</a><a class='btn alt' href='/public/projects'>Projets</a><a class='btn alt' href='/public/events'>Événements</a><a class='btn alt' href='/public/map'>Carte</a><a class='btn alt' href='/public/species'>Encyclopédie</a><a class='btn' href='/public/help'>Je veux aider</a>"""+language_switcher()+auth_desktop+"""</nav></div></header>"""
  mobile="""<nav class='mobile-public-nav'><a href='/public'><span>🏠</span>Accueil</a><a href='/public/map'><span>🗺</span>Carte</a><a href='/public/species'><span>📚</span>Espèces</a><a href='/public/help'><span>🤝</span>Aider</a>"""+auth_mobile+"""</nav>"""
  footer="""<footer class='public-footer'><div class='public-shell'><b>MyTree Professional</b><p>Plateforme de suivi des plantations, des bénévoles et des actions de terrain.</p><a href='/login'>Espace sécurisé</a></div></footer>"""
- tpl="<!doctype html><html lang='"+current_lang()+"' dir='"+current_dir()+"'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='theme-color' content='#102b1c'><title>"+tr(title)+" — MyTree</title>"+STYLE+SMART_NAV_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+"<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'><script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script></head><body class='public-page-body'>"+nav+"<main class='public-shell'><div class='public-auth-banner'>"+auth_desktop+"</div>"+body+"</main>"+footer+mobile+"</body></html>"
+ tpl="<!doctype html><html lang='"+current_lang()+"' dir='"+current_dir()+"'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='theme-color' content='#102b1c'><title>"+tr(title)+" — MyTree</title>"+STYLE+LOT11_STYLE+SMART_NAV_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+"<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'><script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script></head><body class='public-page-body'>"+nav+"<main class='public-shell'><div class='public-auth-banner'>"+auth_desktop+"</div>"+body+"</main>"+footer+mobile+"</body></html>"
  return render_template_string(tpl,**ctx)
 
 @app.route('/public')
@@ -2577,7 +3163,7 @@ def public_recommendations():
 def public_species_print(sid):
  c=db(); sp=c.execute('SELECT * FROM species WHERE id=? AND active=1',(sid,)).fetchone(); c.close()
  if not sp:return ('Espèce introuvable',404)
- return render_template_string("""<!doctype html><html lang='fr'><head><meta charset='utf-8'><title>{{s.name_fr}}</title><style>body{font-family:Arial;max-width:850px;margin:30px auto;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.box{border:1px solid #ccc;padding:12px;border-radius:8px}@media print{button{display:none}}</style></head><body><button onclick='print()'>Imprimer</button><h1>{{s.name_fr}}</h1><h2 dir='rtl'>{{s.name_ar or ''}}</h2><p><i>{{s.scientific_name or ''}}</i> — {{s.family or ''}}</p><div class='grid'><div class='box'><b>Origine</b><br>{{s.origin or '—'}}</div><div class='box'><b>Régions</b><br>{{s.regions or '—'}}</div><div class='box'><b>Sol</b><br>{{s.soil_type or '—'}}</div><div class='box'><b>Eau</b><br>{{s.water_need or '—'}}</div><div class='box'><b>Distance</b><br>{{s.planting_distance or '—'}}</div><div class='box'><b>Hauteur adulte</b><br>{{s.adult_height or '—'}}</div></div><h3>Usages</h3><p>{{s.uses or '—'}}</p><h3>Entretien</h3><p>{{s.maintenance or '—'}}</p><h3>Maladies et précautions</h3><p>{{s.diseases or '—'}}</p><p>{{s.compatibility_note or ''}}</p><h3>Description</h3><p>{{s.description or '—'}}</p></body></html>""",s=sp)
+ return render_template_string("""<!doctype html><html lang='{{lang}}' dir='{{direction}}'><head><meta charset='utf-8'><title>{{s.name_fr}}</title><style>body{font-family:Arial;max-width:850px;margin:30px auto;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.box{border:1px solid #ccc;padding:12px;border-radius:8px}@media print{button{display:none}}</style></head><body><button onclick='print()'>Imprimer</button><h1>{{s.name_fr}}</h1><h2 dir='rtl'>{{s.name_ar or ''}}</h2><p><i>{{s.scientific_name or ''}}</i> — {{s.family or ''}}</p><div class='grid'><div class='box'><b>Origine</b><br>{{s.origin or '—'}}</div><div class='box'><b>Régions</b><br>{{s.regions or '—'}}</div><div class='box'><b>Sol</b><br>{{s.soil_type or '—'}}</div><div class='box'><b>Eau</b><br>{{s.water_need or '—'}}</div><div class='box'><b>Distance</b><br>{{s.planting_distance or '—'}}</div><div class='box'><b>Hauteur adulte</b><br>{{s.adult_height or '—'}}</div></div><h3>Usages</h3><p>{{s.uses or '—'}}</p><h3>Entretien</h3><p>{{s.maintenance or '—'}}</p><h3>Maladies et précautions</h3><p>{{s.diseases or '—'}}</p><p>{{s.compatibility_note or ''}}</p><h3>Description</h3><p>{{s.description or '—'}}</p></body></html>""",s=sp,lang=current_lang(),direction=current_dir())
 
 @app.route('/public/projects')
 def public_projects():
@@ -2636,13 +3222,13 @@ def decide_notification(nid, decision):
    if g['created_by_user_id']:
     c.execute('INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)',(g['created_by_user_id'],'Don '+('accepté' if decision=='accept' else 'refusé'),'Votre don '+(g['receipt_number'] or '')+' a été '+('accepté.' if decision=='accept' else 'refusé.'),'/volunteer/donate','Don',datetime.now().isoformat(timespec='minutes')))
    ok=True
- c.execute('UPDATE notifications SET decision=?,is_read=1 WHERE id=?',(label,nid)); c.commit(); c.close(); return ok
+ processed=datetime.now().isoformat(timespec='minutes'); c.execute('UPDATE notifications SET decision=?,is_read=1,read_at=COALESCE(read_at,?),processed_at=? WHERE id=?',(label,processed,processed,nid)); c.commit(); c.close(); return ok
 
 @app.post('/notifications/<int:nid>/decide/<decision>')
 @login_required
 def notification_decide(nid,decision):
  if not is_admin() or decision not in ('accept','reject'): return redirect('/notifications')
- flash('Demande traitée.' if decide_notification(nid,decision) else 'Cette demande ne peut plus être traitée.')
+ ok=decide_notification(nid,decision); flash('Demande traitée.' if ok else 'Cette demande ne peut plus être traitée.','success' if ok else 'warning')
  return redirect(request.referrer or '/notifications')
 
 @app.post('/notifications/bulk')
@@ -2654,7 +3240,7 @@ def notifications_bulk():
   for raw in ids:
    try: done += 1 if decide_notification(int(raw),decision) else 0
    except ValueError: pass
- flash(f'{done} demande(s) traitée(s).')
+ flash(f'{done} demande(s) traitée(s).','success' if done else 'warning')
  return redirect('/notifications')
 
 @app.route('/action-center')
@@ -2745,19 +3331,72 @@ def operations_map():
 @app.route('/reports/operations')
 @login_required
 def operations_report():
- c=db(); stats={'projects':c.execute('SELECT COUNT(*) n FROM projects WHERE active=1').fetchone()['n'],'tasks_open':c.execute("SELECT COUNT(*) n FROM operational_tasks WHERE status IN ('Planifiée','En cours')").fetchone()['n'],'tasks_done':c.execute("SELECT COUNT(*) n FROM operational_tasks WHERE status='Terminée'").fetchone()['n'],'trees':c.execute('SELECT COUNT(*) n FROM trees WHERE active=1').fetchone()['n'],'priority':c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND (watering_status!='À jour' OR health_status IN ('À surveiller','Urgent','Critique'))").fetchone()['n'],'volunteer_hours':c.execute('SELECT COALESCE(SUM(hours),0) n FROM volunteer_time_logs WHERE validated=1').fetchone()['n']}
- projects=c.execute("""SELECT p.id,p.code,p.name,p.status,p.target_trees,COUNT(DISTINCT t.id) tree_count,COUNT(DISTINCT ot.id) task_count,SUM(CASE WHEN ot.status='Terminée' THEN 1 ELSE 0 END) done_count FROM projects p LEFT JOIN trees t ON t.project_id=p.id AND t.active=1 LEFT JOIN operational_tasks ot ON ot.project_id=p.id WHERE p.active=1 GROUP BY p.id ORDER BY p.name""").fetchall(); c.close()
- return page('Rapports opérationnels',"""<div class='section-title'><div><h2>Rapport opérationnel</h2><p class='sub'>Vue consolidée des projets et interventions.</p></div><a class='btn' href='/reports/operations.csv'>Exporter CSV</a></div><div class='grid kpis' style='grid-template-columns:repeat(6,1fr)'>{% for label,value in [('Projets',stats.projects),('Tâches ouvertes',stats.tasks_open),('Tâches terminées',stats.tasks_done),('Arbres',stats.trees),('Arbres prioritaires',stats.priority),('Heures bénévoles',stats.volunteer_hours)] %}<div class='card kpi'><small>{{label}}</small><b>{{value}}</b></div>{% endfor %}</div><div class='card' style='overflow:auto'><table><tr><th>Projet</th><th>Statut</th><th>Arbres / objectif</th><th>Interventions</th><th>Terminées</th></tr>{% for p in projects %}<tr><td><a href='/projects/{{p.id}}'><b>{{p.code}} — {{p.name}}</b></a></td><td>{{p.status}}</td><td>{{p.tree_count}} / {{p.target_trees or 0}}</td><td>{{p.task_count}}</td><td>{{p.done_count or 0}}</td></tr>{% else %}<tr><td colspan='5'>Aucun projet.</td></tr>{% endfor %}</table></div>""",stats=stats,projects=projects)
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ opts=common_filter_options(c,f); ctx=active_context(c); ids=[int(x['id']) for x in accessible_filter_projects(c,ctx)]
+ w=['p.active=1']; args=[]
+ if ctx.get('type')=='personal': w.append('p.association_id IS NULL')
+ elif ctx.get('type')=='association':
+  if ids: w.append('p.id IN ('+','.join('?'*len(ids))+')'); args.extend(ids)
+  else: w.append('1=0')
+ elif not is_super_admin(): w.append('1=0')
+ if f['wilaya_id']: w.append('p.wilaya_id=?'); args.append(f['wilaya_id'])
+ if f['commune_id']: w.append('p.commune_id=?'); args.append(f['commune_id'])
+ if f['project_id']: w.append('p.id=?'); args.append(f['project_id'])
+ where=' AND '.join(w)
+ projects=c.execute("""SELECT p.id,p.code,p.name,p.status,p.target_trees,
+ COUNT(DISTINCT CASE WHEN (?='' OR t.zone_id=?) AND (?='' OR t.species_id=?) AND (?='' OR t.planted_by_user_id=?) AND (?='' OR date(COALESCE(t.planted_at,t.created_at))>=date(?)) AND (?='' OR date(COALESCE(t.planted_at,t.created_at))<=date(?)) THEN t.id END) tree_count,
+ COUNT(DISTINCT CASE WHEN (?='' OR ot.zone_id=?) AND (?='' OR date(ot.start_at)>=date(?)) AND (?='' OR date(ot.start_at)<=date(?)) THEN ot.id END) task_count,
+ COUNT(DISTINCT CASE WHEN ot.status='Terminée' AND (?='' OR ot.zone_id=?) AND (?='' OR date(ot.start_at)>=date(?)) AND (?='' OR date(ot.start_at)<=date(?)) THEN ot.id END) done_count
+ FROM projects p LEFT JOIN trees t ON t.project_id=p.id AND t.active=1 LEFT JOIN operational_tasks ot ON ot.project_id=p.id WHERE """+where+" GROUP BY p.id ORDER BY p.name",
+ [f['zone_id'],f['zone_id'],f['species_id'],f['species_id'],f['volunteer_id'],f['volunteer_id'],f['date_from'],f['date_from'],f['date_to'],f['date_to'],f['zone_id'],f['zone_id'],f['date_from'],f['date_from'],f['date_to'],f['date_to'],f['zone_id'],f['zone_id'],f['date_from'],f['date_from'],f['date_to'],f['date_to']]+args).fetchall()
+ stats={'projects':len(projects),'trees':sum(int(x['tree_count'] or 0) for x in projects),'tasks_open':0,'tasks_done':sum(int(x['done_count'] or 0) for x in projects),'priority':0,'volunteer_hours':0}
+ allowed=set(ids)
+ if projects:
+  pids=[int(x['id']) for x in projects]; marks=','.join('?'*len(pids))
+  tq=f"SELECT status,COUNT(*) n FROM operational_tasks WHERE project_id IN ({marks})"; ta=list(pids)
+  if f['zone_id']: tq+=' AND zone_id=?'; ta.append(f['zone_id'])
+  if f['date_from']: tq+=' AND date(start_at)>=date(?)'; ta.append(f['date_from'])
+  if f['date_to']: tq+=' AND date(start_at)<=date(?)'; ta.append(f['date_to'])
+  tq+=' GROUP BY status'
+  for r in c.execute(tq,ta).fetchall():
+   if r['status'] in ('Planifiée','En cours'): stats['tasks_open']+=r['n']
+  tw=f"SELECT COUNT(*) n FROM trees WHERE active=1 AND project_id IN ({marks}) AND (watering_status!='À jour' OR health_status IN ('À surveiller','Urgent','Critique'))"; twa=list(pids)
+  if f['zone_id']: tw+=' AND zone_id=?'; twa.append(f['zone_id'])
+  if f['species_id']: tw+=' AND species_id=?'; twa.append(f['species_id'])
+  if f['volunteer_id']: tw+=' AND planted_by_user_id=?'; twa.append(f['volunteer_id'])
+  stats['priority']=c.execute(tw,twa).fetchone()['n']
+  vh=f"SELECT COALESCE(SUM(hours),0) n FROM volunteer_time_logs WHERE validated=1 AND project_id IN ({marks})"; vha=list(pids)
+  if f['volunteer_id']: vh+=' AND user_id=?'; vha.append(f['volunteer_id'])
+  if f['date_from']: vh+=' AND date(work_date)>=date(?)'; vha.append(f['date_from'])
+  if f['date_to']: vh+=' AND date(work_date)<=date(?)'; vha.append(f['date_to'])
+  stats['volunteer_hours']=c.execute(vh,vha).fetchone()['n']
+ c.close()
+ return page('Rapports opérationnels',"""<div class='section-title'><div><h2>Rapport opérationnel</h2><p class='sub'>Les filtres utilisent le même périmètre que Carte, Arbres et Missions.</p></div><a class='btn' href='/reports/operations.csv?{{request.query_string.decode()}}'>Exporter CSV</a></div><form class='card toolbar'><label>Wilaya<select name='wilaya_id'><option value=''>Toutes</option>{% for x in wilayas %}<option value='{{x.id}}' {% if f.wilaya_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Toutes</option>{% for x in communes %}<option value='{{x.id}}' {% if f.commune_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Projet<select name='project_id'><option value=''>Tous</option>{% for x in projects %}<option value='{{x.id}}' {% if f.project_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Zone<select name='zone_id'><option value=''>Toutes</option>{% for x in zones %}<option value='{{x.id}}' {% if f.zone_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Espèce<select name='species_id'><option value=''>Toutes</option>{% for x in species %}<option value='{{x.id}}' {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label><label>Bénévole<select name='volunteer_id'><option value=''>Tous</option>{% for x in volunteers %}<option value='{{x.id}}' {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Du<input type='date' name='date_from' value='{{f.date_from}}'></label><label>Au<input type='date' name='date_to' value='{{f.date_to}}'></label><button class='btn'>Filtrer</button><a class='btn alt' href='/reports/operations'>Effacer</a></form><div class='grid kpis' style='grid-template-columns:repeat(6,1fr)'>{% for label,value in [('Projets',stats.projects),('Tâches ouvertes',stats.tasks_open),('Tâches terminées',stats.tasks_done),('Arbres',stats.trees),('Arbres prioritaires',stats.priority),('Heures bénévoles',stats.volunteer_hours)] %}<div class='card kpi'><small>{{label}}</small><b>{{value}}</b></div>{% endfor %}</div><div class='card' style='overflow:auto'><table><tr><th>Projet</th><th>Statut</th><th>Arbres / objectif</th><th>Interventions</th><th>Terminées</th></tr>{% for p in report_projects %}<tr><td><a href='/projects/{{p.id}}'><b>{{p.code}} — {{p.name}}</b></a></td><td>{{p.status}}</td><td>{{p.tree_count}} / {{p.target_trees or 0}}</td><td>{{p.task_count}}</td><td>{{p.done_count or 0}}</td></tr>{% else %}<tr><td colspan='5'>Aucun projet.</td></tr>{% endfor %}</table></div>""",stats=stats,report_projects=projects,f=f,**opts)
 
 @app.route('/reports/operations.csv')
 @login_required
 def operations_report_csv():
  import csv
- c=db(); rows=c.execute("""SELECT p.code,p.name,p.status,p.target_trees,COUNT(DISTINCT t.id) tree_count,COUNT(DISTINCT ot.id) task_count,SUM(CASE WHEN ot.status='Terminée' THEN 1 ELSE 0 END) done_count FROM projects p LEFT JOIN trees t ON t.project_id=p.id AND t.active=1 LEFT JOIN operational_tasks ot ON ot.project_id=p.id WHERE p.active=1 GROUP BY p.id ORDER BY p.name""").fetchall(); c.close()
+ f=filters_from_request(); c=db(); guard=common_filter_guard(c,f)
+ if guard: c.close(); return guard
+ ctx=active_context(c); projects=[x for x in accessible_filter_projects(c,ctx) if (not f['project_id'] or str(x['id'])==str(f['project_id'])) and (not f['wilaya_id'] or str(x['wilaya_id'] or '')==str(f['wilaya_id'])) and (not f['commune_id'] or str(x['commune_id'] or '')==str(f['commune_id']))]
  out=io.StringIO(); w=csv.writer(out,delimiter=';'); w.writerow(['Code','Projet','Statut','Objectif arbres','Arbres suivis','Interventions','Terminées'])
- for r in rows: w.writerow([r['code'],r['name'],r['status'],r['target_trees'],r['tree_count'],r['task_count'],r['done_count'] or 0])
- data=io.BytesIO(('\ufeff'+out.getvalue()).encode('utf-8')); data.seek(0); return send_file(data,mimetype='text/csv',as_attachment=True,download_name='rapport-operationnel-mytree.csv')
-
+ for p in projects:
+  tq='SELECT COUNT(*) n FROM trees WHERE active=1 AND project_id=?'; ta=[p['id']]
+  if f['zone_id']: tq+=' AND zone_id=?'; ta.append(f['zone_id'])
+  if f['species_id']: tq+=' AND species_id=?'; ta.append(f['species_id'])
+  if f['volunteer_id']: tq+=' AND planted_by_user_id=?'; ta.append(f['volunteer_id'])
+  if f['date_from']: tq+=' AND date(COALESCE(planted_at,created_at))>=date(?)'; ta.append(f['date_from'])
+  if f['date_to']: tq+=' AND date(COALESCE(planted_at,created_at))<=date(?)'; ta.append(f['date_to'])
+  trees=c.execute(tq,ta).fetchone()['n']
+  oq='SELECT status,COUNT(*) n FROM operational_tasks WHERE project_id=?'; oa=[p['id']]
+  if f['zone_id']: oq+=' AND zone_id=?'; oa.append(f['zone_id'])
+  if f['date_from']: oq+=' AND date(start_at)>=date(?)'; oa.append(f['date_from'])
+  if f['date_to']: oq+=' AND date(start_at)<=date(?)'; oa.append(f['date_to'])
+  oq+=' GROUP BY status'; rs=c.execute(oq,oa).fetchall(); total=sum(r['n'] for r in rs); done=sum(r['n'] for r in rs if r['status']=='Terminée')
+  w.writerow([p['code'],p['name'],p['status'],p['target_trees'],trees,total,done])
+ c.close(); data=io.BytesIO(('\ufeff'+out.getvalue()).encode('utf-8')); data.seek(0); return send_file(data,mimetype='text/csv',as_attachment=True,download_name='rapport-operationnel-mytree.csv')
 
 
 # --- v1.8.0 Alpha 9 : suppressions contrôlées et automatisations ---
@@ -2775,7 +3414,7 @@ def project_delete(pid):
 def zone_delete(zid):
  if not is_admin(): return redirect('/zones')
  c=db(); refs=sum(c.execute(f'SELECT COUNT(*) n FROM {table} WHERE zone_id=?',(zid,)).fetchone()['n'] for table in ['trees','teams','missions','events','operational_tasks'])
- if refs: c.execute('UPDATE zones SET active=0 WHERE id=?',(zid,)); msg='Zone archivée car elle possède un historique.'
+ if refs: c.execute('UPDATE zones SET active=0 WHERE id=?',(zid,)); msg='Zone archivée : elle contient des arbres ou un historique lié et ne peut pas être supprimée physiquement.'
  else: c.execute('DELETE FROM zones WHERE id=?',(zid,)); msg='Zone supprimée.'
  c.commit(); c.close(); log_action('delete_or_archive','zone',zid,msg); flash(msg); return redirect('/zones')
 
@@ -2855,15 +3494,36 @@ def backup_restore():
 
 @app.route('/healthz')
 def healthz():
- """Contrôle local de disponibilité utilisé pendant les tests RC1."""
+ """Disponibilité + intégrité minimale pour Railway/Online Test."""
  try:
-  c=db()
-  integrity=c.execute('PRAGMA quick_check').fetchone()[0]
-  tables=c.execute("SELECT COUNT(*) n FROM sqlite_master WHERE type='table'").fetchone()['n']
-  c.close()
-  return jsonify({'status':'ok' if integrity=='ok' else 'degraded','version':APP_VERSION,'database':integrity,'tables':tables}), (200 if integrity=='ok' else 503)
+  d=database_diagnostics()
+  secret_ok=bool(app.secret_key and app.secret_key!='change-this-secret' and len(str(app.secret_key))>=24)
+  storage_ok=os.access(DATA_DIR,os.W_OK)
+  ok=d['integrity']=='ok' and not d['missing_tables'] and d['foreign_key_errors']==0 and storage_ok and secret_ok
+  payload={'status':'ok' if ok else 'degraded','version':APP_VERSION,'database':d['integrity'],'tables':d['tables'],'missing_tables':d['missing_tables'],'foreign_key_errors':d['foreign_key_errors'],'storage_writable':storage_ok,'secret_configured':secret_ok}
+  return jsonify(payload), (200 if ok else 503)
  except Exception as exc:
   return jsonify({'status':'error','version':APP_VERSION,'error':str(exc)}),503
+
+@app.route('/readyz')
+def readyz():
+ """Readiness stricte : utilisée avant d'ouvrir le candidat aux testeurs."""
+ try:
+  d=database_diagnostics(); ok=d['integrity']=='ok' and not d['missing_tables'] and d['foreign_key_errors']==0
+  return jsonify({'ready':ok,'version':APP_VERSION,**d}), (200 if ok else 503)
+ except Exception as exc:
+  return jsonify({'ready':False,'version':APP_VERSION,'error':str(exc)}),503
+
+@app.after_request
+def lot12_security_headers(response):
+ # En-têtes sûrs pour le candidat Online Test, sans casser Leaflet/caméra.
+ response.headers.setdefault('X-Content-Type-Options','nosniff')
+ response.headers.setdefault('X-Frame-Options','SAMEORIGIN')
+ response.headers.setdefault('Referrer-Policy','strict-origin-when-cross-origin')
+ response.headers.setdefault('Permissions-Policy','geolocation=(self), camera=(self), microphone=()')
+ if request.is_secure:
+  response.headers.setdefault('Strict-Transport-Security','max-age=15552000; includeSubDomains')
+ return response
 
 
 # --- Réglage v2.0 : activation des nouveaux bénévoles ---
@@ -2965,6 +3625,83 @@ def is_admin():
  ctx=active_context()
  return ctx['type']=='association' and ctx.get('role_code') in ('association_admin','admin')
 
+
+# Alpha 4 Lot 3 — permissions evaluated per association, never globally.
+ASSOCIATION_ROLE_PERMISSIONS={
+ 'association_admin':{'*'}, 'admin':{'*'},
+ 'volunteer':{
+  'dashboard.view','association.read','project.read','zone.read','tree.view','tree.create',
+  'tree.request_delete','watering.view','watering.create','intervention.view','intervention.create',
+  'mission.view','mission.close','team.view','event.view','event.register','map.view',
+  'notification.view','donation.view','nursery.view','member.view','report.read'
+ }
+}
+
+def association_membership(c,association_id,user_id=None):
+ user_id=user_id or session.get('uid')
+ if not user_id or not association_id: return None
+ return c.execute("SELECT * FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' ORDER BY CASE role_code WHEN 'association_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END LIMIT 1",(association_id,user_id)).fetchone()
+
+def audit_permission(c,association_id,permission_code,result,action='authorize',resource_type=None,resource_id=None,details=''):
+ try:
+  c.execute('INSERT INTO association_audit_logs(user_id,association_id,permission_code,action,resource_type,resource_id,result,details,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(session.get('uid'),association_id,permission_code,action,resource_type,resource_id,result,details,datetime.now().isoformat(timespec='seconds')))
+  c.commit()
+ except Exception:
+  pass
+
+def has_association_permission(code,association_id=None,resource_type=None,resource_id=None,audit_denied=True):
+ if not session.get('uid'): return False
+ c=db(); ctx=active_context(c); aid=association_id or ctx.get('association_id')
+ if is_super_admin(): c.close(); return True
+ if ctx.get('type')!='association' or not aid or int(ctx.get('association_id') or 0)!=int(aid):
+  if audit_denied: audit_permission(c,aid,code,'denied','authorize',resource_type,resource_id,'Contexte association absent ou différent')
+  c.close(); return False
+ m=association_membership(c,aid)
+ if not m:
+  if audit_denied: audit_permission(c,aid,code,'denied','authorize',resource_type,resource_id,'Adhésion absente, inactive ou non approuvée')
+  c.close(); return False
+ allowed=ASSOCIATION_ROLE_PERMISSIONS.get(m['role_code'],set())
+ ok='*' in allowed or code in allowed
+ if not ok and audit_denied: audit_permission(c,aid,code,'denied','authorize',resource_type,resource_id,'Rôle association: '+str(m['role_code']))
+ c.close(); return ok
+
+def has_permission(code):
+ # Association context: permissions are strictly membership-scoped.
+ ctx=active_context()
+ if ctx['type']=='association': return has_association_permission(code,ctx['association_id'])
+ if ctx['type']=='global': return is_super_admin()
+ # Personal context keeps legacy user/role permissions for personal data only.
+ if not session.get('uid'): return False
+ c=db()
+ override=c.execute('SELECT up.granted FROM user_permissions up JOIN permissions p ON p.id=up.permission_id WHERE up.user_id=? AND p.code=?',(session['uid'],code)).fetchone()
+ if override is not None: c.close(); return bool(override['granted'])
+ row=c.execute('SELECT 1 FROM users u JOIN role_permissions rp ON rp.role_id=u.role_id JOIN permissions p ON p.id=rp.permission_id JOIN roles r ON r.id=u.role_id WHERE u.id=? AND u.active=1 AND r.active=1 AND p.code=?',(session['uid'],code)).fetchone(); c.close(); return bool(row)
+
+def permission_required(code):
+ def deco(fn):
+  @wraps(fn)
+  def wrapped(*a,**k):
+   if not session.get('uid'): return redirect('/login')
+   ctx=active_context()
+   if not has_permission(code):
+    if ctx['type']=='association': return ('Permission association refusée',403)
+    return ('Accès non autorisé',403)
+   return fn(*a,**k)
+  return wrapped
+ return deco
+
+def association_permission_required(code):
+ def deco(fn):
+  @wraps(fn)
+  def wrapped(*a,**k):
+   if not session.get('uid'): return redirect('/login')
+   ctx=active_context()
+   if ctx['type']!='association' or not ctx.get('association_id'): return ('Contexte association requis',403)
+   if not has_association_permission(code,ctx['association_id']): return ('Permission association refusée',403)
+   return fn(*a,**k)
+  return wrapped
+ return deco
+
 @app.route('/context/switch')
 @login_required
 def switch_context():
@@ -3012,16 +3749,20 @@ def tenant_access_allowed(ctx, association_id):
 
 @app.before_request
 def tenant_guard_alpha4():
- if not session.get('uid') or request.endpoint in ('switch_context','login','logout','public_home','public_associations','healthz','static'): return None
+ if not session.get('uid') or request.endpoint in ('switch_context','login','logout','public_home','public_associations','healthz','readyz','static'): return None
  ctx=active_context()
  if ctx['type']=='global' and is_super_admin(): return None
  arg,table=tenant_resource_for_request()
  if not arg or not request.view_args or arg not in request.view_args: return None
  ident=request.view_args[arg]; c=db(); has_assoc='association_id' in columns(c,table)
- r=c.execute(f'SELECT association_id FROM {table} WHERE id=?',(ident,)).fetchone() if has_assoc else None; c.close()
+ fields='association_id,project_id' if table in ('missions','events') and 'project_id' in columns(c,table) else 'association_id'
+ r=c.execute(f'SELECT {fields} FROM {table} WHERE id=?',(ident,)).fetchone() if has_assoc else None
  if r and not tenant_access_allowed(ctx,r['association_id']):
-  return ('Accès association non autorisé',403)
- return None
+  # Lot 8: owner/partner associations may view operational resources attached to an accepted shared project.
+  if table in ('missions','events') and ctx.get('type')=='association' and r['project_id'] and collaboration_access(c,r['project_id'],ctx.get('association_id'),'can_view'):
+   c.close(); return None
+  c.close(); return ('Accès association non autorisé',403)
+ c.close(); return None
 
 @app.route('/public/associations')
 def public_associations():
@@ -3146,58 +3887,80 @@ def api_associations():
 
 
 
+def collaboration_history(c,cid,action,association_id=None,details=''):
+ c.execute('INSERT INTO association_collaboration_history(collaboration_id,action,actor_user_id,association_id,details,created_at) VALUES(?,?,?,?,?,?)',(cid,action,session.get('uid'),association_id,details,datetime.now().isoformat(timespec='seconds')))
+
+def collaboration_access(c,project_id,association_id,capability='can_view'):
+ p=c.execute('SELECT association_id FROM projects WHERE id=? AND active=1',(project_id,)).fetchone()
+ if not p: return False
+ if int(p['association_id'] or 0)==int(association_id or 0): return True
+ if capability not in ('can_view','can_intervene','can_add_tree','can_manage_missions'): return False
+ return bool(c.execute(f"SELECT 1 FROM association_collaborations WHERE project_id=? AND invited_association_id=? AND status='accepted' AND {capability}=1",(project_id,association_id)).fetchone())
+
 @app.route('/projects/<int:pid>/collaboration',methods=['GET','POST'])
 @login_required
 def project_collaboration(pid):
  c=db(); p=c.execute('SELECT * FROM projects WHERE id=? AND active=1',(pid,)).fetchone()
  if not p: c.close(); return ('Projet introuvable',404)
- inviter=p['association_id']
- if not inviter:
-  c.close(); flash('La collaboration inter-associations est réservée aux projets d’association.'); return redirect('/projects/'+str(pid))
- if not can_administer_association(c,inviter):
-  c.close(); return ('Administration de l’association requise',403)
+ owner=p['association_id']
+ if not owner: c.close(); flash('La collaboration inter-associations est réservée aux projets d’association.'); return redirect('/projects/'+str(pid))
+ if not can_administer_association(c,owner): c.close(); return ('Administration de l’association propriétaire requise',403)
  if request.method=='POST':
-  invited=int(request.form.get('association_id') or 0)
-  target=c.execute("SELECT id,name FROM associations WHERE id=? AND status='active'",(invited,)).fetchone() if invited else None
-  if not target or invited==inviter:
-   c.close(); flash('Association invitée invalide.'); return redirect('/projects/'+str(pid)+'/collaboration')
-  now=datetime.now().isoformat(timespec='minutes')
-  existing=c.execute("SELECT id,status FROM association_collaborations WHERE project_id=? AND inviting_association_id=? AND invited_association_id=?",(pid,inviter,invited)).fetchone()
-  if existing and existing['status'] in ('pending','accepted'):
-   flash('Une invitation ou collaboration existe déjà avec cette association.')
+  invited=int(request.form.get('association_id') or 0); target=c.execute("SELECT id,name FROM associations WHERE id=? AND status='active'",(invited,)).fetchone() if invited else None
+  if not target or invited==owner: c.close(); flash('Association invitée invalide.'); return redirect('/projects/'+str(pid)+'/collaboration')
+  now=datetime.now().isoformat(timespec='minutes'); existing=c.execute("SELECT * FROM association_collaborations WHERE project_id=? AND inviting_association_id=? AND invited_association_id=?",(pid,owner,invited)).fetchone()
+  if existing and existing['status'] in ('pending','accepted'): flash('Une invitation ou collaboration existe déjà avec cette association.')
   else:
+   rights=(1,1,1 if request.form.get('can_add_tree') else 0,1 if request.form.get('can_manage_missions') else 0)
    if existing:
-    c.execute("UPDATE association_collaborations SET status='pending',created_by_user_id=?,created_at=?,reviewed_by_user_id=NULL,reviewed_at=NULL WHERE id=?",(session['uid'],now,existing['id']))
+    c.execute("UPDATE association_collaborations SET status='pending',can_view=?,can_intervene=?,can_add_tree=?,can_manage_missions=?,created_by_user_id=?,created_at=?,reviewed_by_user_id=NULL,reviewed_at=NULL,ended_by_user_id=NULL,ended_at=NULL,end_reason=NULL WHERE id=?",(*rights,session['uid'],now,existing['id'])); cid=existing['id']
    else:
-    c.execute("INSERT INTO association_collaborations(project_id,inviting_association_id,invited_association_id,status,created_by_user_id,created_at) VALUES(?,?,?,'pending',?,?)",(pid,inviter,invited,session['uid'],now))
+    cur=c.execute("INSERT INTO association_collaborations(project_id,inviting_association_id,invited_association_id,status,can_view,can_intervene,can_add_tree,can_manage_missions,created_by_user_id,created_at) VALUES(?,?,?,'pending',?,?,?,?,?,?)",(pid,owner,invited,*rights,session['uid'],now)); cid=cur.lastrowid
+   collaboration_history(c,cid,'invited',owner,'Invitation envoyée à '+target['name'])
    admins=c.execute("SELECT DISTINCT user_id FROM association_memberships WHERE association_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(invited,)).fetchall()
-   for admin in admins:
-    c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(admin['user_id'],'Invitation de collaboration','Une association vous invite à collaborer sur le projet '+p['name']+'.','/collaborations','Information',now))
+   for admin in admins: c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(admin['user_id'],'Invitation de collaboration','Invitation à collaborer sur le projet '+p['name']+'.','/collaborations','Collaboration',now))
    c.commit(); flash('Invitation de collaboration envoyée.')
- rows=c.execute('SELECT ac.*,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.project_id=? ORDER BY ac.id DESC',(pid,)).fetchall(); assocs=c.execute("SELECT id,name,map_symbol FROM associations WHERE status='active' AND id<>? ORDER BY name",(inviter,)).fetchall(); c.close()
- content="""<div class='card'><h2>🤝 Collaboration — {{p.name}}</h2><p class='sub'>Seuls les administrateurs de l’association propriétaire peuvent inviter une autre association.</p><form method='post'><label>Inviter une association<select name='association_id' required><option value=''>Choisir</option>{% for a in assocs %}<option value='{{a.id}}'>{{a.map_symbol}} {{a.name}}</option>{% endfor %}</select></label><button class='btn'>Envoyer l’invitation</button> <a class='btn alt' href='/collaborations'>Centre de collaboration</a></form></div><div class='card'><table><tr><th>Invitante</th><th>Invitée</th><th>Statut</th></tr>{% for x in rows %}<tr><td>{{x.inviter_name}}</td><td>{{x.invited_name}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan='3'>Aucune collaboration.</td></tr>{% endfor %}</table></div>"""
+ rows=c.execute('SELECT ac.*,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.project_id=? ORDER BY ac.id DESC',(pid,)).fetchall(); assocs=c.execute("SELECT id,name,map_symbol FROM associations WHERE status='active' AND id<>? ORDER BY name",(owner,)).fetchall(); c.close()
+ content="""<div class='card'><h2>🤝 Collaboration — {{p.name}}</h2><p class='sub'>L’association propriétaire conserve le contrôle du projet. Les droits partenaires sont explicites.</p><form method='post'><label>Association<select name='association_id' required><option value=''>Choisir</option>{% for a in assocs %}<option value='{{a.id}}'>{{a.map_symbol}} {{a.name}}</option>{% endfor %}</select></label><label><input type='checkbox' name='can_add_tree'> Autoriser ajout d’arbres</label><label><input type='checkbox' name='can_manage_missions'> Autoriser gestion des missions</label><button class='btn'>Inviter</button> <a class='btn alt' href='/collaborations'>Centre de collaboration</a></form></div><div class='card'><table><tr><th>Partenaire</th><th>Statut</th><th>Droits</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.invited_name}}</td><td>{{x.status}}</td><td>Voir ✓ · Intervention ✓ · Arbres {{'✓' if x.can_add_tree else '—'}} · Missions {{'✓' if x.can_manage_missions else '—'}}</td><td>{% if x.status=='accepted' %}<form method='post' action='/collaborations/{{x.id}}/end'><input name='reason' placeholder='Motif'><button class='btn alt'>Terminer</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan='4'>Aucune collaboration.</td></tr>{% endfor %}</table></div>"""
  return page('Collaboration associations',content,p=p,assocs=assocs,rows=rows)
 
 @app.route('/collaborations')
 @login_required
 def collaborations_center():
  ctx=active_context()
- if ctx['type']!='association' or not ctx['association_id']:
-  flash('Sélectionnez une association pour consulter ses collaborations.'); return redirect('/my-associations')
- c=db(); aid=ctx['association_id']
- rows=c.execute("SELECT ac.*,p.name project_name,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN projects p ON p.id=ac.project_id JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.inviting_association_id=? OR ac.invited_association_id=? ORDER BY CASE ac.status WHEN 'pending' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END,ac.id DESC",(aid,aid)).fetchall(); admin=can_administer_association(c,aid); c.close()
- content="""<div class='section-title'><div><h2>🤝 Centre de collaboration</h2><p class='sub'>Invitations et projets partagés de l’association active.</p></div></div><div class='card'><table><tr><th>Projet</th><th>Association invitante</th><th>Association invitée</th><th>Statut</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.project_name}}</td><td>{{x.inviter_name}}</td><td>{{x.invited_name}}</td><td>{{x.status}}</td><td>{% if admin and x.invited_association_id==aid and x.status=='pending' %}<div class='action-set'><form method='post' action='/collaborations/{{x.id}}/accept'><button class='btn'>Accepter</button></form><form method='post' action='/collaborations/{{x.id}}/reject'><button class='btn alt'>Refuser</button></form></div>{% elif x.status=='accepted' %}<span class='badge ok'>Active</span>{% else %}—{% endif %}</td></tr>{% else %}<tr><td colspan='5'>Aucune collaboration pour cette association.</td></tr>{% endfor %}</table></div>"""
+ if ctx['type']!='association' or not ctx['association_id']: flash('Sélectionnez une association pour consulter ses collaborations.'); return redirect('/my-associations')
+ c=db(); aid=ctx['association_id']; rows=c.execute("SELECT ac.*,p.name project_name,a1.name inviter_name,a2.name invited_name FROM association_collaborations ac JOIN projects p ON p.id=ac.project_id JOIN associations a1 ON a1.id=ac.inviting_association_id JOIN associations a2 ON a2.id=ac.invited_association_id WHERE ac.inviting_association_id=? OR ac.invited_association_id=? ORDER BY CASE ac.status WHEN 'pending' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END,ac.id DESC",(aid,aid)).fetchall(); admin=can_administer_association(c,aid); c.close()
+ content="""<div class='section-title'><div><h2>🤝 Centre de collaboration</h2><p class='sub'>Projets propres et partenariats de l’association active.</p></div></div><div class='card'><table><tr><th>Projet</th><th>Propriétaire</th><th>Partenaire</th><th>Statut</th><th>Droits</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.project_name}}</td><td>{{x.inviter_name}}</td><td>{{x.invited_name}}</td><td>{{x.status}}</td><td>Voir {{'✓' if x.can_view else '—'}} · Intervention {{'✓' if x.can_intervene else '—'}} · Arbres {{'✓' if x.can_add_tree else '—'}} · Missions {{'✓' if x.can_manage_missions else '—'}}</td><td>{% if admin and x.invited_association_id==aid and x.status=='pending' %}<div class='action-set'><form method='post' action='/collaborations/{{x.id}}/accept'><button class='btn'>Accepter</button></form><form method='post' action='/collaborations/{{x.id}}/reject'><button class='btn alt'>Refuser</button></form></div>{% elif admin and x.invited_association_id==aid and x.status=='accepted' %}<form method='post' action='/collaborations/{{x.id}}/leave'><button class='btn alt'>Quitter</button></form>{% elif x.status=='accepted' %}<span class='badge ok'>Active</span>{% else %}—{% endif %}</td></tr>{% else %}<tr><td colspan='6'>Aucune collaboration.</td></tr>{% endfor %}</table></div>"""
  return page('Collaborations',content,rows=rows,aid=aid,admin=admin)
 
 @app.post('/collaborations/<int:cid>/<decision>')
 @login_required
 def collaboration_decision(cid,decision):
- if decision not in ('accept','reject'): return ('Décision invalide',400)
+ if decision not in ('accept','reject','leave','end'): return ('Décision invalide',400)
  c=db(); x=c.execute('SELECT * FROM association_collaborations WHERE id=?',(cid,)).fetchone()
- if not x: c.close(); return ('Invitation introuvable',404)
- allowed=is_super_admin() or c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(x['invited_association_id'],session['uid'])).fetchone()
- if not allowed: c.close(); return ('Accès refusé',403)
- c.execute('UPDATE association_collaborations SET status=?,reviewed_by_user_id=?,reviewed_at=? WHERE id=?',('accepted' if decision=='accept' else 'rejected',session['uid'],datetime.now().isoformat(timespec='minutes'),cid)); c.commit(); c.close(); flash('Invitation de collaboration mise à jour.'); return redirect('/collaborations')
+ if not x: c.close(); return ('Collaboration introuvable',404)
+ now=datetime.now().isoformat(timespec='minutes')
+ if decision in ('accept','reject'):
+  if x['status']!='pending': c.close(); return ('Invitation déjà traitée',409)
+  if not can_administer_association(c,x['invited_association_id']): c.close(); return ('Accès refusé',403)
+  status='accepted' if decision=='accept' else 'rejected'; c.execute('UPDATE association_collaborations SET status=?,reviewed_by_user_id=?,reviewed_at=? WHERE id=?',(status,session['uid'],now,cid)); collaboration_history(c,cid,status,x['invited_association_id'])
+ elif decision=='leave':
+  if x['status']!='accepted' or not can_administer_association(c,x['invited_association_id']): c.close(); return ('Accès refusé',403)
+  c.execute("UPDATE association_collaborations SET status='left',ended_by_user_id=?,ended_at=?,end_reason=? WHERE id=?",(session['uid'],now,'Partenaire a quitté la collaboration',cid)); collaboration_history(c,cid,'left',x['invited_association_id'])
+ else:
+  if x['status']!='accepted' or not can_administer_association(c,x['inviting_association_id']): c.close(); return ('Accès refusé',403)
+  reason=clean(request.form.get('reason')) or 'Collaboration terminée par le propriétaire'; c.execute("UPDATE association_collaborations SET status='ended',ended_by_user_id=?,ended_at=?,end_reason=? WHERE id=?",(session['uid'],now,reason,cid)); collaboration_history(c,cid,'ended',x['inviting_association_id'],reason)
+ c.commit(); c.close(); flash('Collaboration mise à jour.'); return redirect(request.referrer or '/collaborations')
+
+@app.get('/collaborations/<int:cid>/history')
+@login_required
+def collaboration_history_view(cid):
+ c=db(); x=c.execute('SELECT * FROM association_collaborations WHERE id=?',(cid,)).fetchone()
+ if not x: c.close(); return ('Collaboration introuvable',404)
+ ctx=active_context(c); aid=ctx.get('association_id')
+ if not is_super_admin() and int(aid or 0) not in (int(x['inviting_association_id']),int(x['invited_association_id'])): c.close(); return ('Accès refusé',403)
+ rows=c.execute('SELECT h.*,u.name actor_name FROM association_collaboration_history h LEFT JOIN users u ON u.id=h.actor_user_id WHERE h.collaboration_id=? ORDER BY h.id DESC',(cid,)).fetchall(); c.close()
+ return page('Historique collaboration',"""<div class='card'><h2>Historique collaboration</h2><table><tr><th>Date</th><th>Action</th><th>Utilisateur</th><th>Détails</th></tr>{% for h in rows %}<tr><td>{{h.created_at}}</td><td>{{h.action}}</td><td>{{h.actor_name or '—'}}</td><td>{{h.details or '—'}}</td></tr>{% endfor %}</table></div>""",rows=rows)
 
 @app.errorhandler(404)
 def not_found(error):
