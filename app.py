@@ -788,6 +788,64 @@ LOT12_MAPFIX_STYLE='''<style id="lot12-mapfix-style">
 }
 </style>'''
 
+LOT12_UNIFIED_FILTER_STYLE='''<style id="mytree-unified-filter-style">
+.unified-filter-launcher{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
+.unified-filter-launcher .filter-count{font-size:.9rem;opacity:.7}
+.unified-filter-drawer{display:none!important}
+.unified-filter-drawer.open{display:grid!important}
+.unified-filter-close{display:none}
+@media(max-width:700px){
+ .unified-filter-launcher .btn{width:100%}
+ .unified-filter-drawer.open{display:grid!important;position:fixed;z-index:1700;left:8px;right:8px;top:70px;bottom:76px;overflow:auto;background:#fff;border-radius:14px;padding:14px;box-shadow:0 12px 38px rgba(0,0,0,.28);grid-template-columns:1fr!important;align-content:start}
+ .unified-filter-drawer.open .unified-filter-close{display:block;position:sticky;top:0;z-index:3;width:100%;margin-bottom:8px}
+}
+</style>'''
+LOT12_UNIFIED_FILTER_SCRIPT='''<script id="mytree-unified-filter-script">
+(function(){
+ const filterNames=new Set(['wilaya_id','commune_id','association_id','owner_type','volunteer_id','project_id','zone_id','species_id','sex','health_status','watering_status','approval_status','gps_status','q','quick','status','priority','action_type','event_type','mission_type','date_from','date_to','type']);
+ function enhance(form){
+   if(!form || form.dataset.unifiedFilter==='1' || form.id==='mapFilters') return;
+   const method=(form.getAttribute('method')||'get').toLowerCase();
+   if(method!=='get') return;
+   const controls=[...form.querySelectorAll('input[name],select[name]')];
+   const filterControls=controls.filter(x=>filterNames.has(x.name));
+   if(filterControls.length<2) return;
+   form.dataset.unifiedFilter='1';
+   form.classList.add('unified-filter-drawer');
+   form.setAttribute('aria-hidden','true');
+
+   const launch=document.createElement('div');
+   launch.className='unified-filter-launcher noprint';
+   const btn=document.createElement('button');
+   btn.type='button'; btn.className='btn'; btn.innerHTML='🔎 Filtre';
+   const count=document.createElement('span'); count.className='filter-count';
+   function activeCount(){
+     return filterControls.filter(x=>{
+       if(x.type==='checkbox'||x.type==='radio') return x.checked;
+       return String(x.value||'').trim()!=='';
+     }).length;
+   }
+   function refresh(){const n=activeCount();count.textContent=n?n+' filtre(s) actif(s)':'Aucun filtre actif';}
+   btn.onclick=()=>{form.classList.add('open');form.setAttribute('aria-hidden','false');};
+   launch.append(btn,count);
+   form.parentNode.insertBefore(launch,form);
+
+   const close=document.createElement('button');
+   close.type='button'; close.className='btn alt unified-filter-close'; close.textContent='Fermer';
+   close.onclick=()=>{form.classList.remove('open');form.setAttribute('aria-hidden','true');};
+   form.insertBefore(close,form.firstChild);
+
+   form.addEventListener('change',refresh);
+   refresh();
+ }
+ function scan(root=document){
+   root.querySelectorAll('form.toolbar,form.filter-panel,form.filters,form[class*="filter"]').forEach(enhance);
+ }
+ document.addEventListener('DOMContentLoaded',()=>scan());
+ new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{if(n.nodeType===1){if(n.matches&&n.matches('form'))enhance(n);scan(n)}}))).observe(document.documentElement,{childList:true,subtree:true});
+})();
+</script>'''
+
 def page(title,body,**ctx):
  content=render_template_string(body,tr=tr,lang=current_lang(),**ctx)
  if session.get('uid'):
@@ -803,9 +861,9 @@ def page(title,body,**ctx):
   # Never send Retour back into action-entry forms after a completed/redirected operation.
   if any(x in back_path for x in ['/planting/new','/volunteer/donate','/donations/new','/watering/new']): back_path=home_path
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+'</body></html>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
   return render_template_string(tpl,content=content)
- return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main></body></html>',content=content)
+ return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main>'+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>',content=content)
 
 def filters_from_request():
  # Alpha 4 Lot 6 — contrat de filtres commun à tous les écrans métier.
@@ -1713,8 +1771,15 @@ def api_map_data():
  ctx=active_context(c); uid=session.get('uid'); types=set(request.args.getlist('type')) or {'tree','project','zone','event','mission'}
  projects=list(accessible_filter_projects(c,ctx)); project_ids={int(x['id']) for x in projects}; data=[]
  def add(kind,row,title,subtitle='',url=''):
-  if row['latitude'] is None or row['longitude'] is None: return
-  data.append({'type':kind,'id':row['id'],'lat':row['latitude'],'lon':row['longitude'],'title':title,'subtitle':subtitle,'url':url,'association_id':row['association_id'] if 'association_id' in row.keys() else None,'project_id':row['project_id'] if 'project_id' in row.keys() else None})
+  # MapFix 2 — certaines ressources (notamment projects) n'ont pas de colonnes GPS.
+  # Ne jamais lever d'exception : ignorer proprement les ressources non géolocalisables.
+  keys=set(row.keys())
+  if 'latitude' not in keys or 'longitude' not in keys: return
+  lat=row['latitude']; lon=row['longitude']
+  if lat is None or lon is None: return
+  data.append({'type':kind,'id':row['id'],'lat':lat,'lon':lon,'title':title,'subtitle':subtitle,'url':url,
+               'association_id':row['association_id'] if 'association_id' in keys else None,
+               'project_id':row['project_id'] if 'project_id' in keys else None})
  if 'tree' in types:
   where,args=tree_where(f)
   q="""SELECT t.*,s.name_fr species_name,p.name project_name,z.name zone_name,a.name association_name,a.map_symbol association_symbol FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN users u ON u.id=t.planted_by_user_id LEFT JOIN associations a ON a.id=t.association_id WHERE """+where+" AND t.approval_status='approved' AND t.latitude IS NOT NULL AND t.longitude IS NOT NULL"
@@ -3155,7 +3220,7 @@ def public_page(title, body, **ctx):
  nav="""<header class='public-header'><div class='public-shell' style='width:100%;display:flex;align-items:center;justify-content:space-between;gap:16px'><a class='public-brand' href='/public'>🌳 <span>MyTree</span> 🇩🇿</a><nav class='public-nav'><a class='btn alt' href='/public'>Accueil</a><a class='btn alt' href='/public/associations'>Associations</a><a class='btn alt' href='/public/projects'>Projets</a><a class='btn alt' href='/public/events'>Événements</a><a class='btn alt' href='/public/map'>Carte</a><a class='btn alt' href='/public/species'>Encyclopédie</a><a class='btn' href='/public/help'>Je veux aider</a>"""+language_switcher()+auth_desktop+"""</nav></div></header>"""
  mobile="""<nav class='mobile-public-nav'><a href='/public'><span>🏠</span>Accueil</a><a href='/public/map'><span>🗺</span>Carte</a><a href='/public/species'><span>📚</span>Espèces</a><a href='/public/help'><span>🤝</span>Aider</a>"""+auth_mobile+"""</nav>"""
  footer="""<footer class='public-footer'><div class='public-shell'><b>MyTree Professional</b><p>Plateforme de suivi des plantations, des bénévoles et des actions de terrain.</p><a href='/login'>Espace sécurisé</a></div></footer>"""
- tpl="<!doctype html><html lang='"+current_lang()+"' dir='"+current_dir()+"'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='theme-color' content='#102b1c'><title>"+tr(title)+" — MyTree</title>"+STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+SMART_NAV_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+"<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'><script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script></head><body class='public-page-body'>"+nav+"<main class='public-shell'><div class='public-auth-banner'>"+auth_desktop+"</div>"+body+"</main>"+footer+mobile+"</body></html>"
+ tpl="<!doctype html><html lang='"+current_lang()+"' dir='"+current_dir()+"'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='theme-color' content='#102b1c'><title>"+tr(title)+" — MyTree</title>"+STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+SMART_NAV_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+i18n_script()+"<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'><script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script></head><body class='public-page-body'>"+nav+"<main class='public-shell'><div class='public-auth-banner'>"+auth_desktop+"</div>"+body+"</main>"+footer+mobile+"</body></html>"
  return render_template_string(tpl,**ctx)
 
 @app.route('/public')
