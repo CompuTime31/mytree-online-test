@@ -790,26 +790,44 @@ LOT12_MAPFIX_STYLE='''<style id="lot12-mapfix-style">
 
 LOT12_UNIFIED_FILTER_STYLE='''<style id="mytree-unified-filter-style">
 .unified-filter-launcher{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
-.unified-filter-launcher .filter-count{font-size:.9rem;opacity:.7}
+.unified-filter-launcher .filter-count{font-size:.9rem;opacity:.75}
 .unified-filter-drawer{display:none!important}
 .unified-filter-drawer.open{display:grid!important}
 .unified-filter-close{display:none}
+.unified-filter-actions{display:flex;gap:8px;flex-wrap:wrap;grid-column:1/-1}
+.unified-filter-actions .btn{min-width:120px}
 @media(max-width:700px){
  .unified-filter-launcher .btn{width:100%}
- .unified-filter-drawer.open{display:grid!important;position:fixed;z-index:1700;left:8px;right:8px;top:70px;bottom:76px;overflow:auto;background:#fff;border-radius:14px;padding:14px;box-shadow:0 12px 38px rgba(0,0,0,.28);grid-template-columns:1fr!important;align-content:start}
+ .unified-filter-drawer.open{
+   display:grid!important;position:fixed;z-index:1700;left:8px;right:8px;top:70px;bottom:76px;
+   overflow:auto;background:#fff;border-radius:14px;padding:14px;box-shadow:0 12px 38px rgba(0,0,0,.28);
+   grid-template-columns:1fr!important;align-content:start
+ }
  .unified-filter-drawer.open .unified-filter-close{display:block;position:sticky;top:0;z-index:3;width:100%;margin-bottom:8px}
+ .unified-filter-actions{position:sticky;bottom:0;background:#fff;padding-top:10px}
+ .unified-filter-actions .btn{flex:1;min-width:0}
 }
 </style>'''
 LOT12_UNIFIED_FILTER_SCRIPT='''<script id="mytree-unified-filter-script">
 (function(){
- const filterNames=new Set(['wilaya_id','commune_id','association_id','owner_type','volunteer_id','project_id','zone_id','species_id','sex','health_status','watering_status','approval_status','gps_status','q','quick','status','priority','action_type','event_type','mission_type','date_from','date_to','type']);
+ const filterNames=new Set([
+  'wilaya_id','commune_id','association_id','owner_type','volunteer_id','project_id','zone_id',
+  'species_id','sex','health_status','watering_status','approval_status','gps_status','q','quick',
+  'status','priority','action_type','event_type','mission_type','date_from','date_to','type','role','active'
+ ]);
+ function clearUrl(form){
+   const url=new URL(window.location.href);
+   [...url.searchParams.keys()].forEach(k=>{ if(filterNames.has(k)) url.searchParams.delete(k); });
+   window.location.href=url.pathname+(url.searchParams.toString()?'?'+url.searchParams.toString():'');
+ }
  function enhance(form){
    if(!form || form.dataset.unifiedFilter==='1' || form.id==='mapFilters') return;
    const method=(form.getAttribute('method')||'get').toLowerCase();
    if(method!=='get') return;
    const controls=[...form.querySelectorAll('input[name],select[name]')];
    const filterControls=controls.filter(x=>filterNames.has(x.name));
-   if(filterControls.length<2) return;
+   if(new Set(filterControls.map(x=>x.name)).size<2) return;
+
    form.dataset.unifiedFilter='1';
    form.classList.add('unified-filter-drawer');
    form.setAttribute('aria-hidden','true');
@@ -817,32 +835,78 @@ LOT12_UNIFIED_FILTER_SCRIPT='''<script id="mytree-unified-filter-script">
    const launch=document.createElement('div');
    launch.className='unified-filter-launcher noprint';
    const btn=document.createElement('button');
-   btn.type='button'; btn.className='btn'; btn.innerHTML='🔎 Filtre';
+   btn.type='button'; btn.className='btn unified-filter-open'; btn.innerHTML='🔎 Filtrer';
+   btn.setAttribute('aria-expanded','false');
    const count=document.createElement('span'); count.className='filter-count';
+
    function activeCount(){
      return filterControls.filter(x=>{
        if(x.type==='checkbox'||x.type==='radio') return x.checked;
        return String(x.value||'').trim()!=='';
      }).length;
    }
-   function refresh(){const n=activeCount();count.textContent=n?n+' filtre(s) actif(s)':'Aucun filtre actif';}
-   btn.onclick=()=>{form.classList.add('open');form.setAttribute('aria-hidden','false');};
+   function refresh(){
+     const n=activeCount();
+     count.textContent=n?n+' filtre(s) actif(s)':'Aucun filtre actif';
+   }
+   function setOpen(open){
+     form.classList.toggle('open',open);
+     form.setAttribute('aria-hidden',open?'false':'true');
+     btn.setAttribute('aria-expanded',open?'true':'false');
+     if(open) setTimeout(()=>close.focus(),0);
+     else setTimeout(()=>btn.focus(),0);
+   }
+
+   btn.onclick=()=>setOpen(true);
    launch.append(btn,count);
    form.parentNode.insertBefore(launch,form);
 
    const close=document.createElement('button');
    close.type='button'; close.className='btn alt unified-filter-close'; close.textContent='Fermer';
-   close.onclick=()=>{form.classList.remove('open');form.setAttribute('aria-hidden','true');};
+   close.setAttribute('aria-label','Fermer les filtres');
+   close.onclick=()=>setOpen(false);
    form.insertBefore(close,form.firstChild);
 
+   let reset=[...form.querySelectorAll('a,button')].find(x=>{
+      const t=(x.textContent||'').toLowerCase();
+      return t.includes('réinitialiser')||t.includes('reinitialiser')||t.includes('reset');
+   });
+   if(!reset){
+      reset=document.createElement('button');
+      reset.type='button'; reset.className='btn alt'; reset.textContent='Réinitialiser';
+      reset.onclick=()=>clearUrl(form);
+      let actions=form.querySelector('.unified-filter-actions');
+      if(!actions){
+         actions=document.createElement('div');
+         actions.className='unified-filter-actions';
+         const submit=[...form.querySelectorAll('button[type=submit],input[type=submit],button:not([type])')].find(x=>x!==close);
+         if(submit) submit.parentNode.insertBefore(actions,submit), actions.appendChild(submit);
+         else form.appendChild(actions);
+      }
+      actions.appendChild(reset);
+   }
+
+   // Group existing action buttons so they remain at the bottom of the drawer.
+   const candidates=[...form.querySelectorAll('button,a.btn,input[type=submit]')].filter(x=>x!==close && !x.closest('.unified-filter-actions'));
+   if(candidates.length){
+     let actions=form.querySelector('.unified-filter-actions');
+     if(!actions){actions=document.createElement('div');actions.className='unified-filter-actions';form.appendChild(actions);}
+     candidates.forEach(x=>actions.appendChild(x));
+   }
+
    form.addEventListener('change',refresh);
+   form.addEventListener('input',refresh);
+   form.addEventListener('submit',()=>setOpen(false));
+   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&form.classList.contains('open')){e.preventDefault();setOpen(false);}});
    refresh();
  }
  function scan(root=document){
-   root.querySelectorAll('form.toolbar,form.filter-panel,form.filters,form[class*="filter"]').forEach(enhance);
+   root.querySelectorAll('form').forEach(enhance);
  }
  document.addEventListener('DOMContentLoaded',()=>scan());
- new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{if(n.nodeType===1){if(n.matches&&n.matches('form'))enhance(n);scan(n)}}))).observe(document.documentElement,{childList:true,subtree:true});
+ new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{
+   if(n.nodeType===1){if(n.matches&&n.matches('form'))enhance(n);scan(n);}
+ }))).observe(document.documentElement,{childList:true,subtree:true});
 })();
 </script>'''
 
