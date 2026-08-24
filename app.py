@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED4 Associations)'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED5 Association Approval)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -4002,10 +4002,29 @@ def association_requests():
 @login_required
 def association_request_approve(rid):
  if not is_super_admin(): return redirect('/')
- c=db(); r=c.execute("SELECT * FROM association_creation_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
- if not r: c.close(); return redirect('/association-requests')
- now=datetime.now().isoformat(timespec='minutes'); code=association_code(c); cur=c.execute("INSERT INTO associations(code,name,description,wilaya_id,commune_id,address,phone,email,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?, 'active',?,?,?)",(code,r['name'],r['description'],r['wilaya_id'],r['commune_id'],r['address'],r['phone'],r['email'],session['uid'],now)); aid=cur.lastrowid
- c.execute("UPDATE association_creation_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=? WHERE id=?",(session['uid'],now,rid)); c.execute("INSERT OR REPLACE INTO association_memberships(association_id,user_id,member_kind,role_code,status,requested_at,reviewed_by_user_id,reviewed_at) VALUES(?,?,'volunteer','association_admin','approved',?,?,?)",(aid,r['requested_by_user_id'],r['requested_at'],session['uid'],now)); c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(r['requested_by_user_id'],'Association créée','Votre association '+r['name']+' a été validée.','/my-associations','Information',now)); c.commit(); c.close(); flash('Association créée et demandeur nommé administrateur de l’association.'); return redirect('/association-requests')
+ c=db()
+ try:
+  r=c.execute("SELECT * FROM association_creation_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
+  if not r:
+   c.close(); flash('Cette demande a déjà été traitée ou n’existe plus.'); return redirect('/association-requests')
+  now=datetime.now().isoformat(timespec='minutes'); code=association_code(c)
+  cur=c.execute("INSERT INTO associations(code,name,description,wilaya_id,commune_id,address,phone,email,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?, 'active',?,?)",
+                (code,r['name'],r['description'],r['wilaya_id'],r['commune_id'],r['address'],r['phone'],r['email'],session['uid'],now))
+  aid=cur.lastrowid
+  c.execute("UPDATE association_creation_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=?,rejection_reason=NULL WHERE id=?",
+            (session['uid'],now,rid))
+  c.execute("INSERT OR REPLACE INTO association_memberships(association_id,user_id,member_kind,role_code,status,requested_at,reviewed_by_user_id,reviewed_at) VALUES(?,?,'volunteer','association_admin','approved',?,?,?)",
+            (aid,r['requested_by_user_id'],r['requested_at'],session['uid'],now))
+  c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",
+            (r['requested_by_user_id'],'Association créée','Votre association '+r['name']+' a été validée.','/my-associations','Information',now))
+  c.commit(); c.close()
+  flash('Association créée. Le demandeur conserve son profil personnel et dispose maintenant du profil Association.')
+  return redirect('/admin/associations')
+ except Exception:
+  try: c.rollback(); c.close()
+  except Exception: pass
+  raise
+
 
 @app.post('/association-requests/<int:rid>/reject')
 @login_required
