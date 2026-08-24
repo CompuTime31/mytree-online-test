@@ -1,19 +1,9 @@
-# Tests FIXED8 — Gestion Associations
-
-## Super Admin
-- [ ] Associations > Voir ouvre la fiche correcte.
-- [ ] Membres affiche uniquement les membres de l'association sélectionnée.
-- [ ] Modifier enregistre nom/contact/localisation/symbole.
-- [ ] Un symbole déjà utilisé est refusé.
-- [ ] Archiver passe l'association à `archived`.
-- [ ] Supprimer une association active est refusé.
-- [ ] Supprimer une association archivée avec données est refusé.
-
-## Admin Association
-- [ ] En profil Association, bouton Modifier visible seulement pour association_admin/admin.
-- [ ] Modification limitée à l'association active.
-- [ ] Changement de symbole vers un symbole libre fonctionne.
-- [ ] Demander archivage crée une demande pending.
-- [ ] Super Admin reçoit la demande.
-- [ ] Acceptation archive l'association.
-- [ ] Refus conserve l'association active et notifie le demandeur.
+# Tests FIXED9
+- [ ] Super Admin > Associations > Voir > Membres ouvre uniquement les membres de cette association.
+- [ ] Super Admin > Voir > Arbres ouvre uniquement les arbres de cette association.
+- [ ] Super Admin > Voir > Projets ouvre uniquement les projets de cette association.
+- [ ] Profil Association > compteur Membres ouvre les membres du contexte actif.
+- [ ] Profil Association > compteur Arbres ouvre les arbres du contexte actif.
+- [ ] Profil Association > compteur Projets ouvre les projets du contexte actif.
+- [ ] Le bouton Retour revient à la bonne fiche/au bon profil association.
+- [ ] Aucun résultat d'une autre association n'apparaît.

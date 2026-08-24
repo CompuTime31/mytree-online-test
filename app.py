@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED8 Association Management)'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED9 Association Details)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -2808,7 +2808,7 @@ def association_dashboard():
  pending=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND association_id=? AND approval_status='pending'",(aid,)).fetchone()['n']
  c.close()
  admin=ctx.get('role_code') in ('association_admin','admin')
- return page('Accueil association',"""<div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><div class='sub'>Profil Association</div><h2>{{a.name}}</h2><p>{{'Administrateur de cette association' if admin else 'Bénévole de cette association'}}</p></div></div><div class='grid kpis'><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div><div class='card kpi'><small>Membres</small><b>{{members}}</b></div>{% if admin %}<a class='card kpi' href='/plantings/pending'><small>Plantations en attente</small><b>{{pending}}</b></a>{% endif %}</div><div class='association-mobile-actions'>{% if admin %}<a class='btn' href='/association/edit'>✏️ Modifier l’association</a><form method='post' action='/association/archive-request'><input name='reason' placeholder='Motif de la demande d’archivage'><button class='btn amber'>🗄 Demander l’archivage</button></form>{% endif %}</div><div class='vertical-actions'><a class='vertical-action' href='/map'><span class='icon'>🗺</span><span>Carte de l’association</span></a><a class='vertical-action' href='/volunteer/trees'><span class='icon'>🌳</span><span>Arbres</span></a><a class='vertical-action' href='/projects'><span class='icon'>📁</span><span>Projets</span></a>{% if admin %}<a class='vertical-action' href='/membership-requests'><span class='icon'>👥</span><span>Gérer les membres</span></a>{% endif %}</div>""",a=a,admin=admin,trees=trees,projects=projects,members=members,pending=pending)
+ return page('Accueil association',"""<div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><div class='sub'>Profil Association</div><h2>{{a.name}}</h2><p>{{'Administrateur de cette association' if admin else 'Bénévole de cette association'}}</p></div></div><div class='grid kpis'><a class='card kpi' href='/association/trees'><small>Arbres</small><b>{{trees}}</b><span class='sub'>Voir les arbres</span></a><a class='card kpi' href='/association/projects'><small>Projets</small><b>{{projects}}</b><span class='sub'>Voir les projets</span></a><a class='card kpi' href='/association/members'><small>Membres</small><b>{{members}}</b><span class='sub'>Voir les membres</span></a>{% if admin %}<a class='card kpi' href='/plantings/pending'><small>Plantations en attente</small><b>{{pending}}</b></a>{% endif %}</div><div class='association-mobile-actions'>{% if admin %}<a class='btn' href='/association/edit'>✏️ Modifier l’association</a><form method='post' action='/association/archive-request'><input name='reason' placeholder='Motif de la demande d’archivage'><button class='btn amber'>🗄 Demander l’archivage</button></form>{% endif %}</div><div class='vertical-actions'><a class='vertical-action' href='/map'><span class='icon'>🗺</span><span>Carte de l’association</span></a><a class='vertical-action' href='/volunteer/trees'><span class='icon'>🌳</span><span>Arbres</span></a><a class='vertical-action' href='/projects'><span class='icon'>📁</span><span>Projets</span></a>{% if admin %}<a class='vertical-action' href='/membership-requests'><span class='icon'>👥</span><span>Gérer les membres</span></a>{% endif %}</div>""",a=a,admin=admin,trees=trees,projects=projects,members=members,pending=pending)
 
 @app.route('/volunteer')
 @login_required
@@ -4091,7 +4091,7 @@ def public_association_detail(aid):
  trees=c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
  projects=c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
  c.close()
- return public_page('Association',"""<section class='public-section'><div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><h1>{{a.name}}</h1><div class='sub'>{{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</div></div></div><div class='card'><p>{{a.description or 'Présentation à compléter.'}}</p><p><b>Adresse :</b> {{a.address or '—'}}</p><p><b>Téléphone :</b> {{a.phone or '—'}}</p><p><b>E-mail :</b> {{a.email or '—'}}</p><p><b>Site :</b> {{a.website or '—'}}</p></div><div class='grid kpis'><div class='card kpi'><small>Membres</small><b>{{members}}</b></div><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div></div>{% if session.get('uid') %}<a class='btn' href='/associations/{{a.id}}/join'>Rejoindre</a>{% endif %}</section>""",a=a,members=members,trees=trees,projects=projects)
+ return public_page('Association',"""<section class='public-section'><div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><h1>{{a.name}}</h1><div class='sub'>{{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</div></div></div><div class='card'><p>{{a.description or 'Présentation à compléter.'}}</p><p><b>Adresse :</b> {{a.address or '—'}}</p><p><b>Téléphone :</b> {{a.phone or '—'}}</p><p><b>E-mail :</b> {{a.email or '—'}}</p><p><b>Site :</b> {{a.website or '—'}}</p></div><div class='grid kpis'><a class='card kpi' href='/admin/associations/{{a.id}}/members'><small>Membres</small><b>{{members}}</b><span class='sub'>Voir la liste</span></a><a class='card kpi' href='/admin/associations/{{a.id}}/trees'><small>Arbres</small><b>{{trees}}</b><span class='sub'>Voir les arbres</span></a><a class='card kpi' href='/admin/associations/{{a.id}}/projects'><small>Projets</small><b>{{projects}}</b><span class='sub'>Voir les projets</span></a></div>{% if session.get('uid') %}<a class='btn' href='/associations/{{a.id}}/join'>Rejoindre</a>{% endif %}</section>""",a=a,members=members,trees=trees,projects=projects)
 
 @app.route('/public/associations')
 def public_associations():
@@ -4239,14 +4239,68 @@ def admin_association_detail(aid):
  c.close()
  return page('Association',"""<div class='section-title'><div><h2>{{a.map_symbol or '🌿'}} {{a.name}}</h2><p class='sub'>{{a.code}} · {{a.status}}</p></div><div class='crud-actions'><a class='btn' href='/admin/associations/{{a.id}}/edit'>Modifier</a><a class='btn alt' href='/admin/associations/{{a.id}}/members'>Membres</a><a class='btn alt' href='/public/associations/{{a.id}}'>Vue publique</a></div></div><div class='card'><p><b>Description :</b> {{a.description or '—'}}</p><p><b>Localisation :</b> {{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</p><p><b>Adresse :</b> {{a.address or '—'}}</p><p><b>Téléphone :</b> {{a.phone or '—'}}</p><p><b>E-mail :</b> {{a.email or '—'}}</p><p><b>Site :</b> {{a.website or '—'}}</p></div><div class='grid kpis'><div class='card kpi'><small>Membres</small><b>{{members}}</b></div><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div></div>""",a=a,members=members,trees=trees,projects=projects)
 
+def association_members_detail_page(c,a,back_url):
+ rows=c.execute("SELECT m.*,u.name,u.phone,u.email FROM association_memberships m JOIN users u ON u.id=m.user_id WHERE m.association_id=? AND m.status='approved' ORDER BY CASE m.role_code WHEN 'association_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.name",(a['id'],)).fetchall()
+ return page('Membres association',"""<div class='section-title'><div><h2>👥 Membres — {{a.name}}</h2><p class='sub'>Membres actifs de cette association uniquement.</p></div><a class='btn alt' href='{{back_url}}'>← Retour à l’association</a></div><div class='card' style='overflow:auto'><table><tr><th>Nom</th><th>Contact</th><th>Rôle</th><th>Statut</th><th>Depuis</th></tr>{% for m in rows %}<tr><td>{{m.name}}</td><td>{{m.phone or m.email or '—'}}</td><td>{{m.role_code}}</td><td>{{m.status}}</td><td>{{m.requested_at or '—'}}</td></tr>{% else %}<tr><td colspan='5'>Aucun membre actif.</td></tr>{% endfor %}</table></div>""",a=a,rows=rows,back_url=back_url)
+
+def association_trees_detail_page(c,a,back_url):
+ rows=c.execute("""SELECT t.*,s.name_fr species_name,p.name project_name,z.name zone_name,u.name volunteer_name FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE t.association_id=? AND t.active=1 ORDER BY t.id DESC""",(a['id'],)).fetchall()
+ return page('Arbres association',"""<div class='section-title'><div><h2>🌳 Arbres — {{a.name}}</h2><p class='sub'>{{rows|length}} arbre(s) rattaché(s) à cette association.</p></div><a class='btn alt' href='{{back_url}}'>← Retour à l’association</a></div><div class='card' style='overflow:auto'><table><tr><th>Code</th><th>Espèce</th><th>Projet / Zone</th><th>Planteur</th><th>Santé</th><th>Validation</th><th></th></tr>{% for t in rows %}<tr><td>{{t.tree_code or 'En attente'}}</td><td>{{t.species_name or t.species or '—'}}</td><td>{{t.project_name or '—'}} / {{t.zone_name or '—'}}</td><td>{{t.volunteer_name or t.planted_by or '—'}}</td><td>{{t.health_status}}</td><td>{{t.approval_status}}</td><td><a class='btn alt' href='/tree/{{t.id}}'>Voir</a></td></tr>{% else %}<tr><td colspan='7'>Aucun arbre.</td></tr>{% endfor %}</table></div>""",a=a,rows=rows,back_url=back_url)
+
+def association_projects_detail_page(c,a,back_url):
+ rows=c.execute("""SELECT p.*,u.name manager_name,(SELECT COUNT(*) FROM zones z WHERE z.project_id=p.id AND z.active=1) zone_count,(SELECT COUNT(*) FROM trees t WHERE t.project_id=p.id AND t.active=1) tree_count FROM projects p LEFT JOIN users u ON u.id=p.manager_user_id WHERE p.association_id=? ORDER BY p.active DESC,p.id DESC""",(a['id'],)).fetchall()
+ return page('Projets association',"""<div class='section-title'><div><h2>📁 Projets — {{a.name}}</h2><p class='sub'>{{rows|length}} projet(s) rattaché(s) à cette association.</p></div><a class='btn alt' href='{{back_url}}'>← Retour à l’association</a></div><div class='card' style='overflow:auto'><table><tr><th>Code</th><th>Projet</th><th>Responsable</th><th>Statut</th><th>Zones</th><th>Arbres</th><th></th></tr>{% for p in rows %}<tr><td>{{p.code}}</td><td>{{p.name}}</td><td>{{p.manager_name or '—'}}</td><td>{{'Actif' if p.active else 'Archivé'}} · {{p.status}}</td><td>{{p.zone_count}}</td><td>{{p.tree_count}}</td><td><a class='btn alt' href='/projects/{{p.id}}'>Voir</a></td></tr>{% else %}<tr><td colspan='7'>Aucun projet.</td></tr>{% endfor %}</table></div>""",a=a,rows=rows,back_url=back_url)
+
+@app.route('/admin/associations/<int:aid>/trees')
+@login_required
+def admin_association_trees(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if not a: c.close(); return ('Association introuvable',404)
+ response=association_trees_detail_page(c,a,'/admin/associations/'+str(aid)); c.close(); return response
+
+@app.route('/admin/associations/<int:aid>/projects')
+@login_required
+def admin_association_projects(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if not a: c.close(); return ('Association introuvable',404)
+ response=association_projects_detail_page(c,a,'/admin/associations/'+str(aid)); c.close(); return response
+
+@app.route('/association/members')
+@login_required
+def association_members_detail():
+ ctx=active_context(); aid=ctx.get('association_id') if ctx.get('type')=='association' else None
+ if not aid: return redirect('/volunteer')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); return redirect('/volunteer')
+ response=association_members_detail_page(c,a,'/association'); c.close(); return response
+
+@app.route('/association/trees')
+@login_required
+def association_trees_detail():
+ ctx=active_context(); aid=ctx.get('association_id') if ctx.get('type')=='association' else None
+ if not aid: return redirect('/volunteer')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); return redirect('/volunteer')
+ response=association_trees_detail_page(c,a,'/association'); c.close(); return response
+
+@app.route('/association/projects')
+@login_required
+def association_projects_detail():
+ ctx=active_context(); aid=ctx.get('association_id') if ctx.get('type')=='association' else None
+ if not aid: return redirect('/volunteer')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); return redirect('/volunteer')
+ response=association_projects_detail_page(c,a,'/association'); c.close(); return response
+
 @app.route('/admin/associations/<int:aid>/members')
 @login_required
 def admin_association_members(aid):
  if not is_super_admin(): return redirect('/')
  c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
  if not a: c.close(); return ('Association introuvable',404)
- rows=c.execute("SELECT m.*,u.name,u.phone,u.email FROM association_memberships m JOIN users u ON u.id=m.user_id WHERE m.association_id=? ORDER BY CASE m.status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,u.name",(aid,)).fetchall(); c.close()
- return page('Membres association',"""<div class='section-title'><h2>👥 Membres — {{a.name}}</h2><a class='btn alt' href='/admin/associations/{{a.id}}'>Retour</a></div><div class='card'><div style='overflow:auto'><table><tr><th>Nom</th><th>Contact</th><th>Rôle</th><th>Statut</th><th>Depuis</th></tr>{% for m in rows %}<tr><td>{{m.name}}</td><td>{{m.phone or m.email or '—'}}</td><td>{{m.role_code}}</td><td>{{m.status}}</td><td>{{m.requested_at or '—'}}</td></tr>{% else %}<tr><td colspan='5'>Aucun membre.</td></tr>{% endfor %}</table></div></div>""",a=a,rows=rows)
+ response=association_members_detail_page(c,a,'/admin/associations/'+str(aid)); c.close(); return response
 
 @app.route('/admin/associations/<int:aid>/edit',methods=['GET','POST'])
 @login_required
