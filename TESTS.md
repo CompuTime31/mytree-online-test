@@ -1,15 +1,19 @@
-# Tests FIXED7 — Profile Switch
+# Tests FIXED8 — Gestion Associations
 
-- [ ] Connecter un compte `volunteer`.
-- [ ] Vérifier qu'en Profil Personnel il reste bénévole.
-- [ ] Basculer vers Association A où il est `association_admin`.
-- [ ] Le header affiche l'identité Association A, pas le bénévole comme profil principal.
-- [ ] L'accueil devient `/association`.
-- [ ] Il peut administrer uniquement Association A selon ses permissions.
-- [ ] Il ne voit pas les fonctions Super Admin globales.
-- [ ] Basculer vers Association B où il est `volunteer`.
-- [ ] Les droits changent immédiatement vers ceux de B.
-- [ ] Revenir à Personnel.
-- [ ] Le rôle redevient bénévole et ses associations restent accessibles.
-- [ ] Vérifier que `users.role` n'a pas changé après les bascules.
-- [ ] Super Admin : Global reste disponible et séparé des profils Association.
+## Super Admin
+- [ ] Associations > Voir ouvre la fiche correcte.
+- [ ] Membres affiche uniquement les membres de l'association sélectionnée.
+- [ ] Modifier enregistre nom/contact/localisation/symbole.
+- [ ] Un symbole déjà utilisé est refusé.
+- [ ] Archiver passe l'association à `archived`.
+- [ ] Supprimer une association active est refusé.
+- [ ] Supprimer une association archivée avec données est refusé.
+
+## Admin Association
+- [ ] En profil Association, bouton Modifier visible seulement pour association_admin/admin.
+- [ ] Modification limitée à l'association active.
+- [ ] Changement de symbole vers un symbole libre fonctionne.
+- [ ] Demander archivage crée une demande pending.
+- [ ] Super Admin reçoit la demande.
+- [ ] Acceptation archive l'association.
+- [ ] Refus conserve l'association active et notifie le demandeur.

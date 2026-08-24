@@ -1,26 +1,26 @@
-# Lot 12 — FIXED7 Profile Switch
+# Lot 12 — FIXED8 Association Management
 
-## Sécurité des rôles
-- `association_admin` ne devient jamais `super_admin`.
-- Le rôle global du compte reste indépendant des rôles associatifs.
-- Le changement de profil ne modifie jamais `users.role`.
+## Super Admin
+- Correction du bouton `Voir` : vraie fiche association.
+- Correction du bouton `Membres` : affiche les membres de l'association choisie, pas les demandes globales en attente.
+- Bouton `Modifier` : informations, localisation, contact, site et symbole carte.
+- Bouton `Archiver` : archivage immédiat par Super Admin.
+- Bouton `Supprimer` : uniquement après archivage et uniquement si aucune donnée métier ne dépend encore de l'association.
+- Écran des demandes d'archivage envoyées par les administrateurs d'association.
+- Validation/refus d'une demande d'archivage avec notification.
 
-## Bascule façon Facebook
-- Profil Personnel : identité de la personne.
-- Profil Association : identité visuelle de l'association.
-- Le header affiche l'association comme identité active, avec le rôle associatif.
-- Changer de profil redirige vers l'accueil du profil choisi.
-- Un même compte peut avoir plusieurs associations avec des rôles différents.
+## Administrateur d'association
+- Bouton `Modifier l'association` dans le profil Association.
+- Modification des informations et du symbole parmi les symboles encore disponibles.
+- Bouton `Demander l'archivage`.
+- L'archivage n'est pas exécuté immédiatement : demande envoyée au Super Admin.
+- Super Admin doit accepter ou refuser.
 
-## Permissions
-- En profil Association, les permissions sont prises uniquement dans `association_memberships`.
-- Un administrateur de l'Association A n'obtient aucun droit global sur MyTree.
-- Les droits de l'Association A ne s'appliquent pas à l'Association B.
+## Symboles
+- Un symbole déjà utilisé ou réservé ne peut pas être choisi.
+- Lors d'un changement, l'ancien symbole redevient disponible.
 
-## Interface
-- Nouvel accueil `/association`.
-- Navigation Association spécifique.
-- Navigation mobile spécifique au profil Association.
-- Le profil Personnel reste disponible en permanence.
-
-Aucune migration SQLite ajoutée.
+## Sécurité
+- Un association_admin ne peut modifier que l'association active.
+- Suppression définitive réservée au Super Admin.
+- Aucune suppression d'association contenant encore des données.

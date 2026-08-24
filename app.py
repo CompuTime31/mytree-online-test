@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED7 Profile Switch)'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED8 Association Management)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY AUTOINCREMENT,g
 CREATE TABLE IF NOT EXISTS associations(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT UNIQUE NOT NULL,name TEXT NOT NULL,short_name TEXT,description TEXT,logo_url TEXT,wilaya_id INTEGER,commune_id INTEGER,address TEXT,latitude REAL,longitude REAL,phone TEXT,email TEXT,website TEXT,map_symbol TEXT DEFAULT '🌳',status TEXT DEFAULT 'active',created_by_user_id INTEGER,created_at TEXT NOT NULL,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS association_memberships(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,user_id INTEGER NOT NULL,member_kind TEXT DEFAULT 'volunteer',role_code TEXT DEFAULT 'volunteer',status TEXT DEFAULT 'pending',requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT,UNIQUE(association_id,user_id,member_kind));
 CREATE TABLE IF NOT EXISTS association_creation_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,requested_by_user_id INTEGER,name TEXT NOT NULL,description TEXT,wilaya_id INTEGER,commune_id INTEGER,address TEXT,phone TEXT,email TEXT,status TEXT DEFAULT 'pending',requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT);
+CREATE TABLE IF NOT EXISTS association_archive_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,requested_by_user_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',reason TEXT,requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT);
 CREATE TABLE IF NOT EXISTS association_collaborations(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id INTEGER NOT NULL,inviting_association_id INTEGER NOT NULL,invited_association_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',can_view INTEGER DEFAULT 1,can_intervene INTEGER DEFAULT 1,can_add_tree INTEGER DEFAULT 0,can_manage_missions INTEGER DEFAULT 0,created_by_user_id INTEGER,created_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,ended_by_user_id INTEGER,ended_at TEXT,end_reason TEXT,UNIQUE(project_id,inviting_association_id,invited_association_id));
 CREATE TABLE IF NOT EXISTS association_collaboration_history(id INTEGER PRIMARY KEY AUTOINCREMENT,collaboration_id INTEGER NOT NULL,action TEXT NOT NULL,actor_user_id INTEGER,association_id INTEGER,details TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS association_roles(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,code TEXT NOT NULL,label TEXT NOT NULL,level INTEGER DEFAULT 10,active INTEGER DEFAULT 1,UNIQUE(association_id,code));
@@ -2773,6 +2774,25 @@ def volunteer_permissions(uid):
  states={p['code']:has for p in perms for has in [bool(c.execute('SELECT granted FROM user_permissions WHERE user_id=? AND permission_id=?',(uid,p['id'])).fetchone()['granted']) if c.execute('SELECT granted FROM user_permissions WHERE user_id=? AND permission_id=?',(uid,p['id'])).fetchone() else False]}
  c.close(); return page('Permissions bénévole',"""<div class="card"><h2>{{u.name}}</h2><p>Les menus Missions, Interventions et Équipe restent masqués tant que le droit correspondant n’est pas accordé.</p><form method="post">{% for p in perms %}<label style="display:block;padding:12px;border-bottom:1px solid #ddd"><input style="width:auto" type="checkbox" name="permissions" value="{{p.code}}" {% if states.get(p.code) %}checked{% endif %}> <b>{{p.label}}</b><div class="sub">{{p.code}}</div></label>{% endfor %}<p><button class="btn">Enregistrer les droits</button> <a class="btn alt" href="/volunteers/{{u.id}}">Annuler</a></p></form></div>""",u=u,perms=perms,states=states)
 
+@app.route('/association/edit',methods=['GET','POST'])
+@login_required
+def association_edit():
+ ctx=active_context()
+ if ctx.get('type')!='association' or ctx.get('role_code') not in ('association_admin','admin'): return ('Administration association requise',403)
+ aid=ctx['association_id']; c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); return redirect('/volunteer')
+ if request.method=='POST':
+  symbol=clean(request.form.get('map_symbol'))
+  allowed=set(available_association_symbols(c,current_association_id=aid,include_pending=True))
+  if symbol!=a['map_symbol'] and symbol not in allowed:
+   c.close(); flash('Ce symbole est déjà utilisé ou réservé.'); return redirect('/association/edit')
+  c.execute("UPDATE associations SET name=?,short_name=?,description=?,wilaya_id=?,commune_id=?,address=?,phone=?,email=?,website=?,map_symbol=?,updated_at=? WHERE id=?",
+            (clean(request.form.get('name')),clean(request.form.get('short_name')),clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),clean(request.form.get('website')),symbol,datetime.now().isoformat(timespec='minutes'),aid))
+  c.commit(); c.close(); flash('Informations de l’association modifiées.'); return redirect('/association')
+ symbols=[a['map_symbol']]+[x for x in available_association_symbols(c,current_association_id=aid,include_pending=True) if x!=a['map_symbol']]
+ wilayas=c.execute("SELECT * FROM wilayas WHERE active=1 ORDER BY name").fetchall(); communes=c.execute("SELECT * FROM communes WHERE active=1 ORDER BY name").fetchall(); c.close()
+ return page('Modifier association',"""<div class='card'><h2>Modifier {{a.name}}</h2><form method='post' class='form'><label>Nom<input name='name' value='{{a.name}}' required></label><label>Nom court<input name='short_name' value='{{a.short_name or ''}}'></label><label>Symbole<select name='map_symbol'>{% for s in symbols %}<option value='{{s}}' {% if s==a.map_symbol %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label><label>Wilaya<select name='wilaya_id'><option value=''>—</option>{% for w in wilayas %}<option value='{{w.id}}' {% if w.id==a.wilaya_id %}selected{% endif %}>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>—</option>{% for x in communes %}<option value='{{x.id}}' {% if x.id==a.commune_id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone' value='{{a.phone or ''}}'></label><label>E-mail<input name='email' value='{{a.email or ''}}'></label><label>Site<input name='website' value='{{a.website or ''}}'></label><label class='full'>Adresse<input name='address' value='{{a.address or ''}}'></label><label class='full'>Description<textarea name='description'>{{a.description or ''}}</textarea></label><div class='full'><button class='btn'>Enregistrer</button><a class='btn alt' href='/association'>Annuler</a></div></form></div>""",a=a,symbols=symbols,wilayas=wilayas,communes=communes)
+
 @app.route('/association')
 @login_required
 def association_dashboard():
@@ -2788,7 +2808,7 @@ def association_dashboard():
  pending=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND association_id=? AND approval_status='pending'",(aid,)).fetchone()['n']
  c.close()
  admin=ctx.get('role_code') in ('association_admin','admin')
- return page('Accueil association',"""<div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><div class='sub'>Profil Association</div><h2>{{a.name}}</h2><p>{{'Administrateur de cette association' if admin else 'Bénévole de cette association'}}</p></div></div><div class='grid kpis'><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div><div class='card kpi'><small>Membres</small><b>{{members}}</b></div>{% if admin %}<a class='card kpi' href='/plantings/pending'><small>Plantations en attente</small><b>{{pending}}</b></a>{% endif %}</div><div class='vertical-actions'><a class='vertical-action' href='/map'><span class='icon'>🗺</span><span>Carte de l’association</span></a><a class='vertical-action' href='/volunteer/trees'><span class='icon'>🌳</span><span>Arbres</span></a><a class='vertical-action' href='/projects'><span class='icon'>📁</span><span>Projets</span></a>{% if admin %}<a class='vertical-action' href='/membership-requests'><span class='icon'>👥</span><span>Gérer les membres</span></a>{% endif %}</div>""",a=a,admin=admin,trees=trees,projects=projects,members=members,pending=pending)
+ return page('Accueil association',"""<div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><div class='sub'>Profil Association</div><h2>{{a.name}}</h2><p>{{'Administrateur de cette association' if admin else 'Bénévole de cette association'}}</p></div></div><div class='grid kpis'><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div><div class='card kpi'><small>Membres</small><b>{{members}}</b></div>{% if admin %}<a class='card kpi' href='/plantings/pending'><small>Plantations en attente</small><b>{{pending}}</b></a>{% endif %}</div><div class='association-mobile-actions'>{% if admin %}<a class='btn' href='/association/edit'>✏️ Modifier l’association</a><form method='post' action='/association/archive-request'><input name='reason' placeholder='Motif de la demande d’archivage'><button class='btn amber'>🗄 Demander l’archivage</button></form>{% endif %}</div><div class='vertical-actions'><a class='vertical-action' href='/map'><span class='icon'>🗺</span><span>Carte de l’association</span></a><a class='vertical-action' href='/volunteer/trees'><span class='icon'>🌳</span><span>Arbres</span></a><a class='vertical-action' href='/projects'><span class='icon'>📁</span><span>Projets</span></a>{% if admin %}<a class='vertical-action' href='/membership-requests'><span class='icon'>👥</span><span>Gérer les membres</span></a>{% endif %}</div>""",a=a,admin=admin,trees=trees,projects=projects,members=members,pending=pending)
 
 @app.route('/volunteer')
 @login_required
@@ -4062,6 +4082,17 @@ def tenant_guard_alpha4():
   c.close(); return ('Accès association non autorisé',403)
  c.close(); return None
 
+@app.route('/public/associations/<int:aid>')
+def public_association_detail(aid):
+ c=db()
+ a=c.execute("SELECT a.*,w.name wilaya_name,cm.name commune_name FROM associations a LEFT JOIN wilayas w ON w.id=a.wilaya_id LEFT JOIN communes cm ON cm.id=a.commune_id WHERE a.id=? AND a.status='active'",(aid,)).fetchone()
+ if not a: c.close(); return ('Association introuvable',404)
+ members=c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n']
+ trees=c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
+ projects=c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
+ c.close()
+ return public_page('Association',"""<section class='public-section'><div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><h1>{{a.name}}</h1><div class='sub'>{{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</div></div></div><div class='card'><p>{{a.description or 'Présentation à compléter.'}}</p><p><b>Adresse :</b> {{a.address or '—'}}</p><p><b>Téléphone :</b> {{a.phone or '—'}}</p><p><b>E-mail :</b> {{a.email or '—'}}</p><p><b>Site :</b> {{a.website or '—'}}</p></div><div class='grid kpis'><div class='card kpi'><small>Membres</small><b>{{members}}</b></div><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div></div>{% if session.get('uid') %}<a class='btn' href='/associations/{{a.id}}/join'>Rejoindre</a>{% endif %}</section>""",a=a,members=members,trees=trees,projects=projects)
+
 @app.route('/public/associations')
 def public_associations():
  wid=request.args.get('wilaya_id'); cid=request.args.get('commune_id'); q=clean(request.args.get('q')); c=db(); rows=association_options(c,wid,cid)
@@ -4188,8 +4219,123 @@ def association_request_reject(rid):
 @login_required
 def admin_associations():
  if not is_super_admin(): return redirect('/')
- c=db(); rows=c.execute("SELECT a.*,w.name wilaya_name,cm.name commune_name,(SELECT COUNT(*) FROM association_memberships m WHERE m.association_id=a.id AND m.status='approved') member_count FROM associations a LEFT JOIN wilayas w ON w.id=a.wilaya_id LEFT JOIN communes cm ON cm.id=a.commune_id ORDER BY a.id DESC").fetchall(); pending=c.execute("SELECT COUNT(*) n FROM association_creation_requests WHERE status='pending'").fetchone()['n']; c.close()
- return page('Associations',"""<div class='section-title'><div><h2>🏛 Associations MyTree</h2><p class='sub'>Gestion globale des associations.</p></div></div><div class='card association-mobile-actions'><a class='btn' href='/association-requests'>📨 Demandes en attente ({{pending}})</a><a class='btn' href='/admin/associations/new'>➕ Nouvelle association</a></div><div class='card'><div style='overflow:auto'><table><tr><th>Code</th><th>Association</th><th>Wilaya / Commune</th><th>Membres</th><th>Statut</th><th>Gestion</th></tr>{% for a in rows %}<tr><td>{{a.code}}</td><td>{{a.map_symbol or '🌳'}} {{a.name}}</td><td>{{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</td><td>{{a.member_count}}</td><td>{{a.status}}</td><td><a class='btn alt' href='/public/associations/{{a.id}}'>Voir</a> <a class='btn alt' href='/membership-requests'>Membres</a></td></tr>{% endfor %}</table></div></div>""",rows=rows,pending=pending)
+ c=db()
+ rows=c.execute("SELECT a.*,w.name wilaya_name,cm.name commune_name,(SELECT COUNT(*) FROM association_memberships m WHERE m.association_id=a.id AND m.status='approved') member_count FROM associations a LEFT JOIN wilayas w ON w.id=a.wilaya_id LEFT JOIN communes cm ON cm.id=a.commune_id ORDER BY CASE a.status WHEN 'active' THEN 0 ELSE 1 END,a.id DESC").fetchall()
+ pending=c.execute("SELECT COUNT(*) n FROM association_creation_requests WHERE status='pending'").fetchone()['n']
+ archive_pending=c.execute("SELECT COUNT(*) n FROM association_archive_requests WHERE status='pending'").fetchone()['n']
+ c.close()
+ return page('Associations',"""<div class='section-title'><div><h2>🏛 Associations MyTree</h2><p class='sub'>Gestion globale des associations.</p></div></div><div class='card association-mobile-actions'><a class='btn' href='/association-requests'>📨 Créations en attente ({{pending}})</a><a class='btn' href='/admin/association-archive-requests'>🗄 Archivages en attente ({{archive_pending}})</a><a class='btn' href='/admin/associations/new'>➕ Nouvelle association</a></div><div class='card'><div style='overflow:auto'><table><tr><th>Code</th><th>Association</th><th>Wilaya / Commune</th><th>Membres</th><th>Statut</th><th>Gestion</th></tr>{% for a in rows %}<tr><td>{{a.code}}</td><td>{{a.map_symbol or '🌳'}} {{a.name}}</td><td>{{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</td><td>{{a.member_count}}</td><td><span class='badge'>{{a.status}}</span></td><td class='crud-actions'><a class='btn alt' href='/admin/associations/{{a.id}}'>Voir</a><a class='btn alt' href='/admin/associations/{{a.id}}/members'>Membres</a><a class='btn alt' href='/admin/associations/{{a.id}}/edit'>Modifier</a>{% if a.status=='active' %}<form method='post' action='/admin/associations/{{a.id}}/archive' onsubmit="return confirm('Archiver cette association ?')"><button class='btn amber'>Archiver</button></form>{% else %}<form method='post' action='/admin/associations/{{a.id}}/delete' onsubmit="return confirm('Supprimer définitivement cette association archivée ?')"><button class='btn danger'>Supprimer</button></form>{% endif %}</td></tr>{% endfor %}</table></div></div>""",rows=rows,pending=pending,archive_pending=archive_pending)
+
+@app.route('/admin/associations/<int:aid>')
+@login_required
+def admin_association_detail(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db()
+ a=c.execute("SELECT a.*,w.name wilaya_name,cm.name commune_name FROM associations a LEFT JOIN wilayas w ON w.id=a.wilaya_id LEFT JOIN communes cm ON cm.id=a.commune_id WHERE a.id=?",(aid,)).fetchone()
+ if not a: c.close(); return ('Association introuvable',404)
+ members=c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n']
+ trees=c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
+ projects=c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
+ c.close()
+ return page('Association',"""<div class='section-title'><div><h2>{{a.map_symbol or '🌿'}} {{a.name}}</h2><p class='sub'>{{a.code}} · {{a.status}}</p></div><div class='crud-actions'><a class='btn' href='/admin/associations/{{a.id}}/edit'>Modifier</a><a class='btn alt' href='/admin/associations/{{a.id}}/members'>Membres</a><a class='btn alt' href='/public/associations/{{a.id}}'>Vue publique</a></div></div><div class='card'><p><b>Description :</b> {{a.description or '—'}}</p><p><b>Localisation :</b> {{a.wilaya_name or '—'}} / {{a.commune_name or '—'}}</p><p><b>Adresse :</b> {{a.address or '—'}}</p><p><b>Téléphone :</b> {{a.phone or '—'}}</p><p><b>E-mail :</b> {{a.email or '—'}}</p><p><b>Site :</b> {{a.website or '—'}}</p></div><div class='grid kpis'><div class='card kpi'><small>Membres</small><b>{{members}}</b></div><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div></div>""",a=a,members=members,trees=trees,projects=projects)
+
+@app.route('/admin/associations/<int:aid>/members')
+@login_required
+def admin_association_members(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if not a: c.close(); return ('Association introuvable',404)
+ rows=c.execute("SELECT m.*,u.name,u.phone,u.email FROM association_memberships m JOIN users u ON u.id=m.user_id WHERE m.association_id=? ORDER BY CASE m.status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,u.name",(aid,)).fetchall(); c.close()
+ return page('Membres association',"""<div class='section-title'><h2>👥 Membres — {{a.name}}</h2><a class='btn alt' href='/admin/associations/{{a.id}}'>Retour</a></div><div class='card'><div style='overflow:auto'><table><tr><th>Nom</th><th>Contact</th><th>Rôle</th><th>Statut</th><th>Depuis</th></tr>{% for m in rows %}<tr><td>{{m.name}}</td><td>{{m.phone or m.email or '—'}}</td><td>{{m.role_code}}</td><td>{{m.status}}</td><td>{{m.requested_at or '—'}}</td></tr>{% else %}<tr><td colspan='5'>Aucun membre.</td></tr>{% endfor %}</table></div></div>""",a=a,rows=rows)
+
+@app.route('/admin/associations/<int:aid>/edit',methods=['GET','POST'])
+@login_required
+def admin_association_edit(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if not a: c.close(); return ('Association introuvable',404)
+ if request.method=='POST':
+  symbol=clean(request.form.get('map_symbol'))
+  allowed=set(available_association_symbols(c,current_association_id=aid,include_pending=True))
+  if symbol!=a['map_symbol'] and symbol not in allowed:
+   c.close(); flash('Ce symbole est déjà utilisé ou réservé.'); return redirect('/admin/associations/'+str(aid)+'/edit')
+  c.execute("UPDATE associations SET name=?,short_name=?,description=?,wilaya_id=?,commune_id=?,address=?,phone=?,email=?,website=?,map_symbol=?,updated_at=? WHERE id=?",
+            (clean(request.form.get('name')),clean(request.form.get('short_name')),clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),clean(request.form.get('website')),symbol,datetime.now().isoformat(timespec='minutes'),aid))
+  c.commit(); c.close(); flash('Association modifiée.'); return redirect('/admin/associations/'+str(aid))
+ symbols=[a['map_symbol']]+[x for x in available_association_symbols(c,current_association_id=aid,include_pending=True) if x!=a['map_symbol']]
+ wilayas=c.execute("SELECT * FROM wilayas WHERE active=1 ORDER BY name").fetchall(); communes=c.execute("SELECT * FROM communes WHERE active=1 ORDER BY name").fetchall(); c.close()
+ return page('Modifier association',"""<div class='card'><h2>Modifier {{a.name}}</h2><form method='post' class='form'><label>Nom<input name='name' value='{{a.name}}' required></label><label>Nom court<input name='short_name' value='{{a.short_name or ''}}'></label><label>Symbole<select name='map_symbol'>{% for s in symbols %}<option value='{{s}}' {% if s==a.map_symbol %}selected{% endif %}>{{s}}</option>{% endfor %}</select></label><label>Wilaya<select name='wilaya_id'><option value=''>—</option>{% for w in wilayas %}<option value='{{w.id}}' {% if w.id==a.wilaya_id %}selected{% endif %}>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>—</option>{% for x in communes %}<option value='{{x.id}}' {% if x.id==a.commune_id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone' value='{{a.phone or ''}}'></label><label>E-mail<input name='email' value='{{a.email or ''}}'></label><label>Site<input name='website' value='{{a.website or ''}}'></label><label class='full'>Adresse<input name='address' value='{{a.address or ''}}'></label><label class='full'>Description<textarea name='description'>{{a.description or ''}}</textarea></label><div class='full'><button class='btn'>Enregistrer</button><a class='btn alt' href='/admin/associations/{{a.id}}'>Annuler</a></div></form></div>""",a=a,symbols=symbols,wilayas=wilayas,communes=communes)
+
+@app.post('/admin/associations/<int:aid>/archive')
+@login_required
+def admin_association_archive(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if a and a['status']=='active':
+  c.execute("UPDATE associations SET status='archived',updated_at=? WHERE id=?",(datetime.now().isoformat(timespec='minutes'),aid))
+  c.execute("UPDATE association_archive_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=? WHERE association_id=? AND status='pending'",(session['uid'],datetime.now().isoformat(timespec='minutes'),aid))
+  c.commit(); flash('Association archivée.')
+ c.close(); return redirect('/admin/associations')
+
+@app.post('/admin/associations/<int:aid>/delete')
+@login_required
+def admin_association_delete(aid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if not a or a['status']!='archived': c.close(); flash('Une association doit être archivée avant suppression.'); return redirect('/admin/associations')
+ dependencies=0
+ for table in ['trees','projects','zones','teams','missions','events','members','donations','cash_movements']:
+  if table in {r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")} and 'association_id' in columns(c,table):
+   dependencies+=c.execute(f"SELECT COUNT(*) n FROM {table} WHERE association_id=?",(aid,)).fetchone()['n']
+ if dependencies:
+  c.close(); flash('Suppression refusée : cette association possède encore des données. Conservez-la archivée.'); return redirect('/admin/associations/'+str(aid))
+ c.execute("DELETE FROM association_memberships WHERE association_id=?",(aid,))
+ c.execute("DELETE FROM association_archive_requests WHERE association_id=?",(aid,))
+ c.execute("DELETE FROM associations WHERE id=?",(aid,)); c.commit(); c.close(); flash('Association supprimée définitivement.'); return redirect('/admin/associations')
+
+@app.post('/association/archive-request')
+@login_required
+def association_archive_request():
+ ctx=active_context()
+ if ctx.get('type')!='association' or ctx.get('role_code') not in ('association_admin','admin'): return ('Administration association requise',403)
+ aid=ctx['association_id']; reason=clean(request.form.get('reason')); c=db(); now=datetime.now().isoformat(timespec='minutes')
+ existing=c.execute("SELECT id FROM association_archive_requests WHERE association_id=? AND status='pending'",(aid,)).fetchone()
+ if existing: c.close(); flash('Une demande d’archivage est déjà en attente.'); return redirect('/association')
+ c.execute("INSERT INTO association_archive_requests(association_id,requested_by_user_id,status,reason,requested_at) VALUES(?,?,'pending',?,?)",(aid,session['uid'],reason,now))
+ for u in c.execute("SELECT id FROM users WHERE active=1 AND role='super_admin'").fetchall():
+  c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(u['id'],'Demande d’archivage association','Une association demande son archivage.','/admin/association-archive-requests','Action requise',now))
+ c.commit(); c.close(); flash('Demande d’archivage envoyée au Super Admin.'); return redirect('/association')
+
+@app.route('/admin/association-archive-requests')
+@login_required
+def admin_association_archive_requests():
+ if not is_super_admin(): return redirect('/')
+ c=db(); rows=c.execute("SELECT r.*,a.name association_name,a.map_symbol,u.name requester FROM association_archive_requests r JOIN associations a ON a.id=r.association_id JOIN users u ON u.id=r.requested_by_user_id WHERE r.status='pending' ORDER BY r.id DESC").fetchall(); c.close()
+ return page('Demandes archivage',"""<div class='card'><h2>🗄 Demandes d’archivage</h2><table><tr><th>Association</th><th>Demandeur</th><th>Motif</th><th>Date</th><th>Actions</th></tr>{% for r in rows %}<tr><td>{{r.map_symbol}} {{r.association_name}}</td><td>{{r.requester}}</td><td>{{r.reason or '—'}}</td><td>{{r.requested_at}}</td><td><form method='post' action='/admin/association-archive-requests/{{r.id}}/approve' style='display:inline'><button class='btn'>Valider</button></form><form method='post' action='/admin/association-archive-requests/{{r.id}}/reject' style='display:inline'><input name='reason' placeholder='Motif'><button class='btn alt'>Refuser</button></form></td></tr>{% else %}<tr><td colspan='5'>Aucune demande.</td></tr>{% endfor %}</table></div>""",rows=rows)
+
+@app.post('/admin/association-archive-requests/<int:rid>/approve')
+@login_required
+def admin_association_archive_request_approve(rid):
+ if not is_super_admin(): return redirect('/')
+ c=db(); r=c.execute("SELECT * FROM association_archive_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
+ if not r: c.close(); return redirect('/admin/association-archive-requests')
+ now=datetime.now().isoformat(timespec='minutes')
+ c.execute("UPDATE associations SET status='archived',updated_at=? WHERE id=?",(now,r['association_id']))
+ c.execute("UPDATE association_archive_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=? WHERE id=?",(session['uid'],now,rid))
+ c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(r['requested_by_user_id'],'Archivage accepté','La demande d’archivage de votre association a été acceptée.','/my-associations','Information',now))
+ c.commit(); c.close(); flash('Association archivée.'); return redirect('/admin/association-archive-requests')
+
+@app.post('/admin/association-archive-requests/<int:rid>/reject')
+@login_required
+def admin_association_archive_request_reject(rid):
+ if not is_super_admin(): return redirect('/')
+ reason=clean(request.form.get('reason')); c=db(); r=c.execute("SELECT * FROM association_archive_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
+ if r:
+  now=datetime.now().isoformat(timespec='minutes')
+  c.execute("UPDATE association_archive_requests SET status='rejected',reviewed_by_user_id=?,reviewed_at=?,rejection_reason=? WHERE id=?",(session['uid'],now,reason,rid))
+  c.execute("INSERT INTO notifications(user_id,title,message,link,category,is_read,created_at) VALUES(?,?,?,?,?,0,?)",(r['requested_by_user_id'],'Archivage refusé','La demande d’archivage a été refusée.'+((' Motif : '+reason) if reason else ''),'/association','Information',now))
+  c.commit()
+ c.close(); return redirect('/admin/association-archive-requests')
 
 @app.route('/admin/associations/new',methods=['GET','POST'])
 @login_required
