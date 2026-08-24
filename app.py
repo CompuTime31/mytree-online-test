@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12)'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED2)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -1333,7 +1333,7 @@ def watering_needs():
 @app.route('/volunteers')
 @login_required
 def volunteers():
- f=filters_from_request(); include_inactive=request.args.get('inactive')=='1'; c=db(); us,up=context_user_condition('u'); w=["COALESCE(r.name,u.role)='volunteer'",us];p=list(up)
+ f=filters_from_request(); include_inactive=request.args.get('inactive')=='1'; c=db(); us,up=context_user_condition('u'); w=["(r.name='volunteer' OR (r.name IS NULL AND u.role='volunteer'))",us];p=list(up)
  if not include_inactive:w.append('u.active=1')
  for k,col in [('sex','u.sex'),('wilaya_id','u.wilaya_id'),('commune_id','u.commune_id')]:
   if f[k]:w.append(col+'=?');p.append(f[k])
@@ -3764,7 +3764,8 @@ def context_condition(alias=''):
 
 def context_user_condition(alias='u'):
  ctx=active_context(); prefix=(alias+'.' if alias else '')
- if ctx['type']=='global' and is_super_admin(): return '1=1',[]
+ # Global et Personnel du super-admin gardent l'accès à la liste administrative.
+ if is_super_admin() and ctx['type'] in ('global','personal'): return '1=1',[]
  if ctx['type']=='association' and ctx['association_id']:
   return prefix+'id IN (SELECT user_id FROM association_memberships WHERE association_id=? AND status=\'approved\')',[ctx['association_id']]
  return prefix+'id=?',[session.get('uid')]
