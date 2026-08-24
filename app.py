@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED6 Multi-profile)'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED7 Profile Switch)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -490,16 +490,48 @@ def prevent_duplicate_post():
   fallback='/' if is_admin() else '/volunteer'
   return redirect(_safe_local_target(request.form.get('return_to') or request.referrer or fallback,fallback))
 
-def is_admin(): return session.get('role') in ('super_admin','admin')
+def is_admin():
+ # Rôle GLOBAL uniquement. Un association_admin ne devient jamais admin global.
+ return session.get('role') in ('super_admin','admin')
+
+def is_association_admin():
+ ctx=active_context()
+ return ctx.get('type')=='association' and ctx.get('role_code') in ('association_admin','admin')
+
+def profile_home():
+ ctx=active_context()
+ if ctx.get('type')=='association': return '/association'
+ if is_admin(): return '/'
+ return '/volunteer'
+
+def profile_identity():
+ if not session.get('uid'): return {'type':'public','name':'Public','subtitle':''}
+ c=db(); ctx=active_context(c)
+ if ctx.get('type')=='association' and ctx.get('association_id'):
+  a=c.execute("SELECT name,map_symbol FROM associations WHERE id=?",(ctx['association_id'],)).fetchone()
+  c.close()
+  role='Administrateur' if ctx.get('role_code') in ('association_admin','admin') else 'Bénévole'
+  return {'type':'association','name':((a['map_symbol'] or '🌿')+' '+a['name']) if a else ctx.get('name','Association'),
+          'subtitle':role+' · géré par '+str(session.get('name') or '')}
+ c.close()
+ if ctx.get('type')=='global': return {'type':'global','name':'🌐 MyTree Global','subtitle':'Super Admin · '+str(session.get('name') or '')}
+ return {'type':'personal','name':'👤 '+str(session.get('name') or 'Mon profil'),'subtitle':'Profil personnel'}
+
 
 def has_permission(code):
- if is_admin(): return True
  if not session.get('uid'): return False
+ ctx=active_context()
+ # Une identité Association utilise exclusivement les permissions de cette association.
+ if ctx.get('type')=='association' and not is_super_admin():
+  return has_association_permission(code,ctx.get('association_id'))
+ # Global/Personnel conservent uniquement les droits du compte global/personnel.
+ if is_admin(): return True
  c=db()
  override=c.execute('''SELECT up.granted FROM user_permissions up JOIN permissions p ON p.id=up.permission_id WHERE up.user_id=? AND p.code=?''',(session['uid'],code)).fetchone()
  if override is not None:
   c.close(); return bool(override['granted'])
  row=c.execute('''SELECT 1 FROM users u JOIN role_permissions rp ON rp.role_id=u.role_id JOIN permissions p ON p.id=rp.permission_id JOIN roles r ON r.id=u.role_id WHERE u.id=? AND u.active=1 AND r.active=1 AND p.code=?''',(session['uid'],code)).fetchone(); c.close(); return bool(row)
+
 
 def permission_required(code):
  def deco(fn):
@@ -666,6 +698,30 @@ def volunteer_nav():
 
 
 
+def association_nav():
+ ctx=active_context()
+ aid=ctx.get('association_id')
+ role=ctx.get('role_code')
+ admin=role in ('association_admin','admin')
+ links=[
+  ('/association','🏠 Accueil association',None),
+  ('/map','🗺 Carte','map.view'),
+  ('/volunteer/trees','🌳 Arbres','tree.view'),
+  ('/projects','📁 Projets','project.read'),
+  ('/zones','📍 Zones','zone.read'),
+  ('/missions','🎯 Missions','mission.view'),
+  ('/events','📆 Événements','event.view'),
+  ('/teams','👥 Équipes','team.view'),
+  ('/membership-requests','👥 Demandes membres',None if admin else '__admin__'),
+  ('/collaborations','🤝 Collaborations',None if admin else '__admin__'),
+  ('/notifications','🔔 Notifications','notification.view'),
+ ]
+ body='<aside class="vol-nav association-nav"><div class="brand">🏛 '+str(ctx.get('name') or 'Association')+'</div><div class="slogan">'+('Administration de l’association' if admin else 'Profil bénévole de l’association')+'</div>'
+ for href,label,perm in links:
+  if perm=='__admin__': continue
+  if not perm or has_permission(perm): body+=f'<a href="{href}">{label}</a>'
+ return body+'</aside>'
+
 LOT11_STYLE='''<style id="mytree-lot11-i18n">
 html[dir="rtl"] body{direction:rtl;text-align:right}
 html[dir="rtl"] header,html[dir="rtl"] .header-actions,html[dir="rtl"] .toolbar,html[dir="rtl"] .section-title,html[dir="rtl"] .crud-actions{direction:rtl}
@@ -684,21 +740,31 @@ html[dir="rtl"] .smart-list-search{direction:rtl;text-align:right}
 </style>'''
 
 def connected_mobile_nav():
- # Lot 10: navigation métier mobile commune. L'interface publique n'est jamais injectée ici.
- items=[
-  ('/' if is_admin() else '/volunteer','🏠','Accueil',None),
-  ('/map','🗺','Carte','map.view'),
-  ('/admin/associations' if is_super_admin() else '/my-associations','🏛','Associations',None),
-  ('/notifications','🔔','Alertes','notification.view'),
-  ('/missions' if is_admin() else '/volunteer/missions','🎯','Missions','mission.view'),
-  ('/trees' if is_admin() else '/volunteer/field','🌳','Terrain','tree.view'),
- ]
+ ctx=active_context()
+ if ctx.get('type')=='association':
+  items=[
+   ('/association','🏠','Accueil',None),
+   ('/map','🗺','Carte','map.view'),
+   ('/volunteer/trees','🌳','Arbres','tree.view'),
+   ('/missions','🎯','Missions','mission.view'),
+   ('/notifications','🔔','Alertes','notification.view'),
+  ]
+ else:
+  items=[
+   ('/' if is_admin() else '/volunteer','🏠','Accueil',None),
+   ('/map','🗺','Carte','map.view'),
+   ('/admin/associations' if is_super_admin() else '/my-associations','🏛','Associations',None),
+   ('/notifications','🔔','Alertes','notification.view'),
+   ('/missions' if is_admin() else '/volunteer/missions','🎯','Missions','mission.view'),
+   ('/trees' if is_admin() else '/volunteer/field','🌳','Terrain','tree.view'),
+  ]
  out='<nav class="mobile-connected-nav" aria-label="Navigation mobile">'
  for href,icon,label,perm in items:
   if perm and not has_permission(perm): continue
-  active=' active' if request.path==href or (href!="/" and request.path.startswith(href+"/")) else ''
+  active=' active' if request.path==href or (href!='/' and request.path.startswith(href+'/')) else ''
   out+=f'<a class="{active.strip()}" href="{href}"><span>{icon}</span>{tr(label)}</a>'
  return out+'</nav>'
+
 
 LOT9_UX_SCRIPT='''<script id="mytree-lot9-ux">
 (function(){
@@ -929,13 +995,25 @@ FIXED6_STYLE='''<style id="fixed6-ui">
 .symbol-choice input:checked+span{outline:3px solid currentColor;font-weight:700}
 </style>'''
 
+FIXED7_STYLE='''<style id="fixed7-profile-switch">
+.active-profile-identity{display:flex;flex-direction:column;min-width:160px;padding:6px 10px;border-radius:10px;background:#eef6f0}
+.active-profile-identity.association{background:#e8f4ec;border:1px solid #b8d8c2}
+.active-profile-identity b{font-size:14px}.active-profile-identity small{font-size:11px;color:#5c6d62}
+.association-profile-hero{display:flex;gap:14px;align-items:center;padding:18px;border-radius:16px;background:#eef7f1;margin-bottom:14px}
+.association-avatar{font-size:42px;width:64px;height:64px;display:flex;align-items:center;justify-content:center;background:white;border-radius:50%}
+@media(max-width:700px){.active-profile-identity{grid-column:1/-1;width:100%;box-sizing:border-box}.association-profile-hero{align-items:flex-start}.association-avatar{width:54px;height:54px;font-size:34px;flex:0 0 auto}}
+</style>'''
+
 def page(title,body,**ctx):
  content=render_template_string(body,tr=tr,lang=current_lang(),**ctx)
  if session.get('uid'):
-  nav=NAV_ADMIN if is_admin() else volunteer_nav()
+  active=active_context()
+  if active.get('type')=='association': nav=association_nav()
+  elif is_admin(): nav=NAV_ADMIN
+  else: nav=volunteer_nav()
   c=db(); unread=c.execute('SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0',(session['uid'],)).fetchone()['n']; c.close()
   bell=f'<a class="notif-bell" href="/notifications" title="Notifications">🔔<span>{unread}</span></a>' if unread else '<a class="notif-bell" href="/notifications" title="Notifications">🔔</a>'
-  home_path='/' if is_admin() else '/volunteer'; ref=request.referrer or ''; back_path=home_path
+  home_path=profile_home(); ref=request.referrer or ''; back_path=home_path
   if ref:
    try:
     from urllib.parse import urlparse
@@ -944,7 +1022,9 @@ def page(title,body,**ctx):
   # Never send Retour back into action-entry forms after a completed/redirected operation.
   if any(x in back_path for x in ['/planting/new','/volunteer/donate','/donations/new','/watering/new']): back_path=home_path
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
+  ident=profile_identity()
+  identity_html='<div class="active-profile-identity '+ident['type']+'"><b>'+ident['name']+'</b><small>'+ident['subtitle']+'</small></div>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+identity_html+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
   return render_template_string(tpl,content=content)
  return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main>'+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>',content=content)
 
@@ -2693,6 +2773,23 @@ def volunteer_permissions(uid):
  states={p['code']:has for p in perms for has in [bool(c.execute('SELECT granted FROM user_permissions WHERE user_id=? AND permission_id=?',(uid,p['id'])).fetchone()['granted']) if c.execute('SELECT granted FROM user_permissions WHERE user_id=? AND permission_id=?',(uid,p['id'])).fetchone() else False]}
  c.close(); return page('Permissions bénévole',"""<div class="card"><h2>{{u.name}}</h2><p>Les menus Missions, Interventions et Équipe restent masqués tant que le droit correspondant n’est pas accordé.</p><form method="post">{% for p in perms %}<label style="display:block;padding:12px;border-bottom:1px solid #ddd"><input style="width:auto" type="checkbox" name="permissions" value="{{p.code}}" {% if states.get(p.code) %}checked{% endif %}> <b>{{p.label}}</b><div class="sub">{{p.code}}</div></label>{% endfor %}<p><button class="btn">Enregistrer les droits</button> <a class="btn alt" href="/volunteers/{{u.id}}">Annuler</a></p></form></div>""",u=u,perms=perms,states=states)
 
+@app.route('/association')
+@login_required
+def association_dashboard():
+ ctx=active_context()
+ if ctx.get('type')!='association' or not ctx.get('association_id'):
+  return redirect('/volunteer')
+ c=db(); aid=ctx['association_id']
+ a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); return redirect('/volunteer')
+ members=c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n']
+ trees=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
+ projects=c.execute("SELECT COUNT(*) n FROM projects WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
+ pending=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND association_id=? AND approval_status='pending'",(aid,)).fetchone()['n']
+ c.close()
+ admin=ctx.get('role_code') in ('association_admin','admin')
+ return page('Accueil association',"""<div class='association-profile-hero'><div class='association-avatar'>{{a.map_symbol or '🌿'}}</div><div><div class='sub'>Profil Association</div><h2>{{a.name}}</h2><p>{{'Administrateur de cette association' if admin else 'Bénévole de cette association'}}</p></div></div><div class='grid kpis'><div class='card kpi'><small>Arbres</small><b>{{trees}}</b></div><div class='card kpi'><small>Projets</small><b>{{projects}}</b></div><div class='card kpi'><small>Membres</small><b>{{members}}</b></div>{% if admin %}<a class='card kpi' href='/plantings/pending'><small>Plantations en attente</small><b>{{pending}}</b></a>{% endif %}</div><div class='vertical-actions'><a class='vertical-action' href='/map'><span class='icon'>🗺</span><span>Carte de l’association</span></a><a class='vertical-action' href='/volunteer/trees'><span class='icon'>🌳</span><span>Arbres</span></a><a class='vertical-action' href='/projects'><span class='icon'>📁</span><span>Projets</span></a>{% if admin %}<a class='vertical-action' href='/membership-requests'><span class='icon'>👥</span><span>Gérer les membres</span></a>{% endif %}</div>""",a=a,admin=admin,trees=trees,projects=projects,members=members,pending=pending)
+
 @app.route('/volunteer')
 @login_required
 def volunteer_dashboard():
@@ -3909,9 +4006,12 @@ def switch_context():
  elif typ=='association' and aid:
   ok=bool(is_super_admin() or c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,session['uid'])).fetchone())
  if ok:
-  c.execute("INSERT INTO user_contexts(user_id,context_type,association_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET context_type=excluded.context_type,association_id=excluded.association_id,updated_at=excluded.updated_at",(session['uid'],typ,aid,datetime.now().isoformat(timespec='minutes'))); c.commit(); flash('Contexte actif : '+active_context(c)['name'])
- else: flash('Ce contexte n’est pas autorisé.')
- c.close(); return redirect(request.referrer or ('/' if is_admin() else '/volunteer'))
+  c.execute("INSERT INTO user_contexts(user_id,context_type,association_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET context_type=excluded.context_type,association_id=excluded.association_id,updated_at=excluded.updated_at",(session['uid'],typ,aid,datetime.now().isoformat(timespec='minutes')))
+  c.commit()
+  target='/association' if typ=='association' else ('/' if typ=='global' and is_super_admin() else '/volunteer')
+  c.close(); return redirect(target)
+ c.close(); flash('Ce profil n’est pas autorisé.'); return redirect(profile_home())
+
 
 def tenant_resource_for_request():
  # Alpha 4: resolve tenant ownership from the URL rule, not from generic

@@ -1,14 +1,26 @@
-# FIXED6 — Multi-profils, symboles et validation associative
+# Lot 12 — FIXED7 Profile Switch
 
-- Compte unique avec profil Personnel permanent et un profil par association approuvée.
-- Sélecteur de profil disponible pour tout membre d'au moins une association.
-- Rôle affiché et appliqué association par association.
-- Bibliothèque contrôlée de symboles d'association.
-- Un symbole actif ne peut être attribué à deux associations.
-- Les demandes de création réservent leur symbole pendant l'attente.
-- Plantations associatives bénévoles : validation par Admin Association concernée OU Super Admin.
-- Plantations individuelles : validation Super Admin.
-- Première décision finale ferme la demande pour tous les validateurs.
-- Notifications d'action correspondantes synchronisées après acceptation/refus.
-- Traçabilité du validateur, rôle et association.
-- Migrations SQLite additives et non destructives.
+## Sécurité des rôles
+- `association_admin` ne devient jamais `super_admin`.
+- Le rôle global du compte reste indépendant des rôles associatifs.
+- Le changement de profil ne modifie jamais `users.role`.
+
+## Bascule façon Facebook
+- Profil Personnel : identité de la personne.
+- Profil Association : identité visuelle de l'association.
+- Le header affiche l'association comme identité active, avec le rôle associatif.
+- Changer de profil redirige vers l'accueil du profil choisi.
+- Un même compte peut avoir plusieurs associations avec des rôles différents.
+
+## Permissions
+- En profil Association, les permissions sont prises uniquement dans `association_memberships`.
+- Un administrateur de l'Association A n'obtient aucun droit global sur MyTree.
+- Les droits de l'Association A ne s'appliquent pas à l'Association B.
+
+## Interface
+- Nouvel accueil `/association`.
+- Navigation Association spécifique.
+- Navigation mobile spécifique au profil Association.
+- Le profil Personnel reste disponible en permanence.
+
+Aucune migration SQLite ajoutée.
