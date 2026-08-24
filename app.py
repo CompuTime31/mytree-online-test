@@ -14,7 +14,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED5 Association Approval)'
+APP_VERSION='v2.0 Alpha 4 — Online Test Candidate (Lot 12 — FIXED6 Multi-profile)'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -311,6 +311,11 @@ def init_db():
  c.execute('PRAGMA journal_mode=WAL')
  c.execute('PRAGMA synchronous=NORMAL')
  c.executescript(SCHEMA)
+ # FIXED6 : migrations additives, compatibles avec les bases Railway existantes.
+ if 'requested_map_symbol' not in columns(c,'association_creation_requests'):
+  c.execute("ALTER TABLE association_creation_requests ADD COLUMN requested_map_symbol TEXT")
+ for col,typ in [('reviewed_by_role','TEXT'),('reviewed_by_association_id','INTEGER')]:
+  if col not in columns(c,'trees'): c.execute(f"ALTER TABLE trees ADD COLUMN {col} {typ}")
  migrate_legacy(c)
  seed(c)
  sync_algeria_communes(c)
@@ -917,6 +922,13 @@ LOT12_UNIFIED_FILTER_SCRIPT='''<script id="mytree-unified-filter-script">
 
 FIXED3_STYLE='''<style id="fixed3-ui">.association-mobile-actions,.section-actions,.map-layer-choices{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.map-layer-choices label{min-height:44px;display:flex;align-items:center;gap:7px;padding:6px 10px}@media(max-width:700px){.association-mobile-actions .btn,.section-actions .btn{width:100%;min-height:48px;display:flex;align-items:center;justify-content:center}.map-layer-choices{display:grid;grid-template-columns:1fr}.map-layer-choices label{min-height:48px}}</style>'''
 
+FIXED6_STYLE='''<style id="fixed6-ui">
+.symbol-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(58px,1fr));gap:8px;margin-top:10px}
+.symbol-choice input{position:absolute;opacity:0;pointer-events:none}
+.symbol-choice span{display:flex;align-items:center;justify-content:center;min-height:52px;font-size:28px;border:1px solid #ccd8d0;border-radius:12px;cursor:pointer}
+.symbol-choice input:checked+span{outline:3px solid currentColor;font-weight:700}
+</style>'''
+
 def page(title,body,**ctx):
  content=render_template_string(body,tr=tr,lang=current_lang(),**ctx)
  if session.get('uid'):
@@ -932,7 +944,7 @@ def page(title,body,**ctx):
   # Never send Retour back into action-entry forms after a completed/redirected operation.
   if any(x in back_path for x in ['/planting/new','/volunteer/donate','/donations/new','/watering/new']): back_path=home_path
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+context_switcher()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a> <b>'+str(session.get('name') or '')+'</b></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
   return render_template_string(tpl,content=content)
  return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main>'+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>',content=content)
 
@@ -1236,8 +1248,12 @@ def planting_new():
   if errors:
    for e in errors: flash(e)
   else:
-   pending=not is_admin(); status='pending' if pending else 'approved'; now=datetime.now().isoformat(timespec='minutes'); species=c.execute('SELECT name_fr FROM species WHERE id=?',(request.form['species_id'],)).fetchone()
-   cur=c.execute('''INSERT INTO trees(species_id,species,project_id,zone_id,wilaya_id,commune_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,gps_accuracy,health_status,watering_status,approval_status,approved_by_user_id,approved_at,planting_type,notes,active,created_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(request.form['species_id'],species['name_fr'] if species else None,project_id,zone_id,wilaya_id,commune_id,request.form.get('planted_at') or date.today().isoformat(),session['uid'],session['name'],request.form.get('latitude') or None,request.form.get('longitude') or None,request.form.get('gps_accuracy') or None,'Bon','À jour',status,session['uid'] if is_admin() else None,now if is_admin() else None,'free' if not project_id else ('outside_zone' if not zone_id else 'simple'),request.form.get('notes'),1,now,current_association_id())); tid=cur.lastrowid
+   ctx=active_context(c); assoc_id=ctx.get('association_id') if ctx.get('type')=='association' else None
+   # Une plantation associative saisie par un bénévole reste en attente. Le Super Admin
+   # et les administrateurs de CETTE association partagent une seule décision finale.
+   pending=(not is_super_admin()) and not (assoc_id and c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(assoc_id,session['uid'])).fetchone())
+   status='pending' if pending else 'approved'; now=datetime.now().isoformat(timespec='minutes'); species=c.execute('SELECT name_fr FROM species WHERE id=?',(request.form['species_id'],)).fetchone()
+   cur=c.execute('''INSERT INTO trees(species_id,species,project_id,zone_id,wilaya_id,commune_id,planted_at,planted_by_user_id,planted_by,latitude,longitude,gps_accuracy,health_status,watering_status,approval_status,approved_by_user_id,approved_at,planting_type,notes,active,created_at,association_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(request.form['species_id'],species['name_fr'] if species else None,project_id,zone_id,wilaya_id,commune_id,request.form.get('planted_at') or date.today().isoformat(),session['uid'],session['name'],request.form.get('latitude') or None,request.form.get('longitude') or None,request.form.get('gps_accuracy') or None,'Bon','À jour',status,session['uid'] if is_admin() else None,now if is_admin() else None,'free' if not project_id else ('outside_zone' if not zone_id else 'simple'),request.form.get('notes'),1,now,assoc_id)); tid=cur.lastrowid
    stock_source=(request.form.get('stock_source') if is_admin() else 'personal') or 'personal'; c.execute('UPDATE trees SET stock_source=? WHERE id=?',(stock_source,tid))
    if request.form.get('photo_url'): c.execute('INSERT INTO tree_photos(tree_id,photo_url,caption,created_by_user_id,created_at) VALUES(?,?,?,?,?)',(tid,request.form.get('photo_url'),'Photo de plantation',session['uid'],now))
    if status=='approved':
@@ -1246,8 +1262,11 @@ def planting_new():
     if not ok: c.rollback(); c.close(); flash(msg); return redirect('/planting/new')
    else:
     c.execute('UPDATE trees SET qr_code=? WHERE id=?',(f'MYTREE:PENDING:{tid}',tid))
-    admins=c.execute("SELECT u.id FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.active=1 AND COALESCE(r.name,u.role) IN ('super_admin','admin')").fetchall()
-    for a in admins: c.execute('INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)',(a['id'],'Nouvelle plantation à valider',f'Plantation #{tid} créée par {session.get("name")}.',f'/tree/{tid}','Plantation','tree',tid,now))
+    reviewers={x['id'] for x in c.execute("SELECT u.id FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.active=1 AND COALESCE(r.name,u.role)='super_admin'").fetchall()}
+    if assoc_id:
+     reviewers.update(x['user_id'] for x in c.execute("SELECT user_id FROM association_memberships WHERE association_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(assoc_id,)).fetchall())
+    for reviewer_id in reviewers:
+     c.execute('INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)',(reviewer_id,'Nouvelle plantation à valider',f'Plantation #{tid} créée par {session.get("name")}.',f'/tree/{tid}','Plantation','tree',tid,now))
    save_preferences(c,session['uid'],{'wilaya_id':wilaya_id,'commune_id':commune_id,'project_id':project_id,'zone_id':zone_id,'species_id':request.form.get('species_id'),'team_id':request.form.get('team_id')})
    c.commit(); c.close(); log_action('create','tree',tid,status); flash('Plantation enregistrée.'+(' Elle attend la validation administrative.' if pending else '')); return redirect('/tree/'+str(tid))
  selected={k:request.form.get(k,prefs.get(k,'')) for k in ['wilaya_id','commune_id','project_id','zone_id','species_id']}
@@ -1268,21 +1287,37 @@ def deduct_tree_from_nursery(c,tid):
 @app.post('/plantings/<int:tid>/approve')
 @login_required
 def approve(tid):
- if not is_admin(): return redirect('/')
- c=db(); ok,msg=deduct_tree_from_nursery(c,tid)
+ c=db(); t=c.execute("SELECT * FROM trees WHERE id=?",(tid,)).fetchone()
+ if not t or t['approval_status']!='pending': c.close(); flash('Cette plantation a déjà été traitée.'); return redirect('/tree/'+str(tid))
+ assoc_id=t['association_id']; reviewer_role=None
+ if is_super_admin(): reviewer_role='super_admin'
+ elif assoc_id and c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(assoc_id,session['uid'])).fetchone(): reviewer_role='association_admin'
+ if not reviewer_role: c.close(); flash('Vous n’êtes pas autorisé à valider cette plantation.'); return redirect('/tree/'+str(tid))
+ ok,msg=deduct_tree_from_nursery(c,tid)
  if not ok: c.close(); flash(msg); return redirect('/tree/'+str(tid))
- code=f'TREE-{tid:06d}'; now=datetime.now().isoformat(timespec='minutes'); c.execute("UPDATE trees SET approval_status='approved',tree_code=?,qr_code=?,approved_by_user_id=?,approved_at=?,rejection_reason=NULL WHERE id=?",(code,'MYTREE:'+code,session['uid'],now,tid)); c.execute("INSERT INTO planting_reviews(tree_id,reviewer_user_id,decision,reason,created_at) VALUES(?,?,'approved',NULL,?)",(tid,session['uid'],now)); vol=c.execute('SELECT planted_by_user_id FROM trees WHERE id=?',(tid,)).fetchone();
- if vol and vol['planted_by_user_id']: c.execute('INSERT INTO notifications(user_id,title,message,link,is_read,created_at) VALUES(?,?,?,?,0,?)',(vol['planted_by_user_id'],'Plantation acceptée',f'Votre plantation {code} a été acceptée.',f'/tree/{tid}',now))
- c.commit(); c.close(); log_action('approve','tree',tid); flash('Plantation acceptée.'); return redirect('/tree/'+str(tid))
+ code=f'TREE-{tid:06d}'; now=datetime.now().isoformat(timespec='minutes')
+ c.execute("UPDATE trees SET approval_status='approved',tree_code=?,qr_code=?,approved_by_user_id=?,approved_at=?,rejection_reason=NULL,reviewed_by_role=?,reviewed_by_association_id=? WHERE id=?",(code,'MYTREE:'+code,session['uid'],now,reviewer_role,assoc_id if reviewer_role=='association_admin' else None,tid))
+ c.execute("INSERT INTO planting_reviews(tree_id,reviewer_user_id,decision,reason,created_at) VALUES(?,?,'approved',NULL,?)",(tid,session['uid'],now))
+ c.execute("UPDATE notifications SET is_read=1,decision='approved',decided_at=? WHERE action_type='tree' AND action_id=? AND is_read=0",(now,tid))
+ if t['planted_by_user_id']: c.execute('INSERT INTO notifications(user_id,title,message,link,is_read,created_at) VALUES(?,?,?,?,0,?)',(t['planted_by_user_id'],'Plantation acceptée',f'Votre plantation {code} a été acceptée.',f'/tree/{tid}',now))
+ c.commit(); c.close(); log_action('approve','tree',tid,reviewer_role); flash('Plantation acceptée.'); return redirect('/tree/'+str(tid))
+
 @app.post('/plantings/<int:tid>/reject')
 @login_required
 def reject(tid):
- if not is_admin(): return redirect('/')
- c=db(); now=datetime.now().isoformat(timespec='minutes'); reason=clean(request.form.get('reason'));
+ c=db(); t=c.execute("SELECT * FROM trees WHERE id=?",(tid,)).fetchone()
+ if not t or t['approval_status']!='pending': c.close(); flash('Cette plantation a déjà été traitée.'); return redirect('/tree/'+str(tid))
+ assoc_id=t['association_id']; reviewer_role=None
+ if is_super_admin(): reviewer_role='super_admin'
+ elif assoc_id and c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(assoc_id,session['uid'])).fetchone(): reviewer_role='association_admin'
+ if not reviewer_role: c.close(); flash('Vous n’êtes pas autorisé à refuser cette plantation.'); return redirect('/tree/'+str(tid))
+ now=datetime.now().isoformat(timespec='minutes'); reason=clean(request.form.get('reason'))
  if not reason: c.close(); flash('Le motif du refus est obligatoire.'); return redirect('/tree/'+str(tid))
- c.execute("UPDATE trees SET approval_status='rejected',rejection_reason=? WHERE id=?",(reason,tid)); c.execute("INSERT INTO planting_reviews(tree_id,reviewer_user_id,decision,reason,created_at) VALUES(?,?,'rejected',?,?)",(tid,session['uid'],reason,now)); vol=c.execute('SELECT planted_by_user_id FROM trees WHERE id=?',(tid,)).fetchone();
- if vol and vol['planted_by_user_id']: c.execute('INSERT INTO notifications(user_id,title,message,link,is_read,created_at) VALUES(?,?,?,?,0,?)',(vol['planted_by_user_id'],'Plantation refusée',reason or 'Aucun motif indiqué.',f'/tree/{tid}',now))
- c.commit(); c.close(); log_action('reject','tree',tid,request.form.get('reason','')); flash('Plantation refusée.'); return redirect('/tree/'+str(tid))
+ c.execute("UPDATE trees SET approval_status='rejected',rejection_reason=?,approved_by_user_id=?,approved_at=?,reviewed_by_role=?,reviewed_by_association_id=? WHERE id=?",(reason,session['uid'],now,reviewer_role,assoc_id if reviewer_role=='association_admin' else None,tid))
+ c.execute("INSERT INTO planting_reviews(tree_id,reviewer_user_id,decision,reason,created_at) VALUES(?,?,'rejected',?,?)",(tid,session['uid'],reason,now))
+ c.execute("UPDATE notifications SET is_read=1,decision='rejected',decided_at=? WHERE action_type='tree' AND action_id=? AND is_read=0",(now,tid))
+ if t['planted_by_user_id']: c.execute('INSERT INTO notifications(user_id,title,message,link,is_read,created_at) VALUES(?,?,?,?,0,?)',(t['planted_by_user_id'],'Plantation refusée',reason,f'/tree/{tid}',now))
+ c.commit(); c.close(); log_action('reject','tree',tid,reviewer_role+' · '+reason); flash('Plantation refusée.'); return redirect('/tree/'+str(tid))
 
 @app.route('/trees/<int:tid>/edit',methods=['GET','POST'])
 @login_required
@@ -3690,6 +3725,14 @@ def registration_settings():
 def is_super_admin():
  return session.get('role')=='super_admin'
 
+ASSOCIATION_TREE_SYMBOLS=('🌲','🌴','🌿','🌱','🪴','🎋','🍀','🌾','🌺','🌸','🍂','🍁','🫒','🌰','🍎','🍊','🍋','🍒','🥭','🥥','🌵')
+
+def available_association_symbols(c, current_association_id=None, include_pending=True):
+ used={r['map_symbol'] for r in c.execute("SELECT map_symbol FROM associations WHERE status='active' AND map_symbol IS NOT NULL AND map_symbol<>'' AND (? IS NULL OR id<>?)",(current_association_id,current_association_id)).fetchall()}
+ if include_pending and 'requested_map_symbol' in columns(c,'association_creation_requests'):
+  used.update(r['requested_map_symbol'] for r in c.execute("SELECT requested_map_symbol FROM association_creation_requests WHERE status='pending' AND requested_map_symbol IS NOT NULL AND requested_map_symbol<>''").fetchall())
+ return [x for x in ASSOCIATION_TREE_SYMBOLS if x not in used]
+
 def association_code(c):
  return next_entity_code(c,'associations','code','ASSOC',4)
 
@@ -3735,15 +3778,17 @@ def can_administer_association(c, association_id, user_id=None):
 
 def context_switcher():
  if not session.get('uid'): return ''
- c=db(); ctx=active_context(c); assocs=approved_associations(c,session['uid'])
- assoc_admin=bool(c.execute("SELECT 1 FROM association_memberships WHERE user_id=? AND status='approved' AND role_code IN ('association_admin','admin') LIMIT 1",(session['uid'],)).fetchone())
+ c=db(); ctx=active_context(c)
+ assocs=c.execute("SELECT a.*,m.role_code FROM association_memberships m JOIN associations a ON a.id=m.association_id WHERE m.user_id=? AND m.status='approved' AND a.status='active' ORDER BY a.name",(session['uid'],)).fetchall()
  c.close()
- if not is_super_admin() and not assoc_admin: return ''
+ if not is_super_admin() and not assocs: return ''
  items=[]
  if is_super_admin(): items.append(('global',None,'🌐 Global'))
  items.append(('personal',None,'👤 Personnel'))
- for a in assocs: items.append(('association',a['id'],(a['map_symbol'] or '🌳')+' '+a['name']))
- html='<div class="context-switch"><span class="context-badge">Contexte</span>'
+ for a in assocs:
+  role_label='Administrateur' if a['role_code'] in ('association_admin','admin') else 'Bénévole'
+  items.append(('association',a['id'],(a['map_symbol'] or '🌿')+' '+a['name']+' · '+role_label))
+ html='<div class="context-switch"><span class="context-badge">Changer de profil</span>'
  for typ,aid,label in items:
   active=(ctx['type']==typ and (typ!='association' or int(ctx['association_id'] or 0)==int(aid or 0)))
   href='/context/switch?type='+typ+(('&association_id='+str(aid)) if aid else '')
@@ -3984,12 +4029,14 @@ def membership_reject(mid):
 def association_request_new():
  if request.method=='POST':
   c=db(); name=clean(request.form.get('name')); now=datetime.now().isoformat(timespec='minutes')
+  symbol=clean(request.form.get('map_symbol'))
   if not name: c.close(); flash('Le nom est obligatoire.'); return redirect('/association-request/new')
-  cur=c.execute("INSERT INTO association_creation_requests(requested_by_user_id,name,description,wilaya_id,commune_id,address,phone,email,status,requested_at) VALUES(?,?,?,?,?,?,?,?, 'pending',?)",(session['uid'],name,clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),now)); rid=cur.lastrowid
+  if symbol not in available_association_symbols(c): c.close(); flash('Ce symbole n’est plus disponible. Choisissez-en un autre.'); return redirect('/association-request/new')
+  cur=c.execute("INSERT INTO association_creation_requests(requested_by_user_id,name,description,wilaya_id,commune_id,address,phone,email,status,requested_at,requested_map_symbol) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?)",(session['uid'],name,clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),now,symbol)); rid=cur.lastrowid
   for x in c.execute("SELECT id FROM users WHERE active=1 AND role='super_admin'").fetchall(): c.execute("INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)",(x['id'],'Nouvelle demande d’association',name+' demande son enregistrement dans MyTree.','/association-requests','Action requise','association_request',rid,now))
   c.commit(); c.close(); flash('Demande d’association envoyée au Super Admin.'); return redirect('/my-associations')
- c=db(); wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(); communes=c.execute('SELECT * FROM communes WHERE active=1 ORDER BY name').fetchall(); c.close()
- return page('Demander une association',"""<div class='card'><h2>🏛 Demander la création d’une association</h2><form method='post' class='form'><label>Nom<input name='name' required></label><label>Wilaya<select name='wilaya_id'><option value=''>Choisir</option>{% for w in wilayas %}<option value='{{w.id}}'>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Choisir</option>{% for c in communes %}<option value='{{c.id}}'>{{c.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone'></label><label>E-mail<input name='email' type='email'></label><label class='full'>Adresse<input name='address'></label><label class='full'>Présentation<textarea name='description'></textarea></label><div class='full'><button class='btn'>Envoyer la demande</button> <a class='btn alt' href='/my-associations'>Annuler</a></div></form></div>""",wilayas=wilayas,communes=communes)
+ c=db(); wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(); communes=c.execute('SELECT * FROM communes WHERE active=1 ORDER BY name').fetchall(); symbols=available_association_symbols(c); c.close()
+ return page('Demander une association',"""<div class='card'><h2>🏛 Demander la création d’une association</h2><form method='post' class='form'><label>Nom<input name='name' required></label><div class='full'><b>Symbole de l’association sur la carte</b><div class='symbol-picker'>{% for symbol in symbols %}<label class='symbol-choice'><input type='radio' name='map_symbol' value='{{symbol}}' required><span>{{symbol}}</span></label>{% else %}<p class='sub'>Aucun symbole disponible.</p>{% endfor %}</div><p class='sub'>Un symbole réservé disparaît automatiquement de la liste des autres associations.</p></div><label>Wilaya<select name='wilaya_id'><option value=''>Choisir</option>{% for w in wilayas %}<option value='{{w.id}}'>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Choisir</option>{% for c in communes %}<option value='{{c.id}}'>{{c.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone'></label><label>E-mail<input name='email' type='email'></label><label class='full'>Adresse<input name='address'></label><label class='full'>Présentation<textarea name='description'></textarea></label><div class='full'><button class='btn'>Envoyer la demande</button> <a class='btn alt' href='/my-associations'>Annuler</a></div></form></div>""",wilayas=wilayas,communes=communes,symbols=symbols)
 
 @app.route('/association-requests')
 @login_required
@@ -4007,9 +4054,11 @@ def association_request_approve(rid):
   r=c.execute("SELECT * FROM association_creation_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
   if not r:
    c.close(); flash('Cette demande a déjà été traitée ou n’existe plus.'); return redirect('/association-requests')
-  now=datetime.now().isoformat(timespec='minutes'); code=association_code(c)
-  cur=c.execute("INSERT INTO associations(code,name,description,wilaya_id,commune_id,address,phone,email,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?, 'active',?,?)",
-                (code,r['name'],r['description'],r['wilaya_id'],r['commune_id'],r['address'],r['phone'],r['email'],session['uid'],now))
+  now=datetime.now().isoformat(timespec='minutes'); code=association_code(c); symbol=r['requested_map_symbol'] if 'requested_map_symbol' in r.keys() else None
+  if not symbol or symbol not in available_association_symbols(c,include_pending=False):
+   c.close(); flash('Le symbole demandé n’est plus disponible. Modifiez la demande avant validation.'); return redirect('/association-requests')
+  cur=c.execute("INSERT INTO associations(code,name,description,wilaya_id,commune_id,address,phone,email,map_symbol,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?, 'active',?,?)",
+                (code,r['name'],r['description'],r['wilaya_id'],r['commune_id'],r['address'],r['phone'],r['email'],symbol,session['uid'],now))
   aid=cur.lastrowid
   c.execute("UPDATE association_creation_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=?,rejection_reason=NULL WHERE id=?",
             (session['uid'],now,rid))
@@ -4049,11 +4098,11 @@ def admin_association_new():
  if request.method=='POST':
   c=db(); name=clean(request.form.get('name')); now=datetime.now().isoformat(timespec='minutes')
   if not name: c.close(); flash('Nom obligatoire.'); return redirect('/admin/associations/new')
-  symbol=clean(request.form.get('map_symbol')) or '🌳'
-  if c.execute('SELECT 1 FROM associations WHERE map_symbol=? AND status=\'active\'',(symbol,)).fetchone(): c.close(); flash('Ce symbole arbre est déjà utilisé par une autre association. Choisissez-en un autre.'); return redirect('/admin/associations/new')
+  symbol=clean(request.form.get('map_symbol'))
+  if symbol not in available_association_symbols(c): c.close(); flash('Ce symbole arbre est déjà utilisé par une autre association. Choisissez-en un autre.'); return redirect('/admin/associations/new')
   c.execute("INSERT INTO associations(code,name,short_name,description,wilaya_id,commune_id,address,phone,email,map_symbol,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?, 'active',?,?)",(association_code(c),name,clean(request.form.get('short_name')),clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),symbol,session['uid'],now)); c.commit(); c.close(); flash('Association créée.'); return redirect('/admin/associations')
- c=db(); wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(); communes=c.execute('SELECT * FROM communes WHERE active=1 ORDER BY name').fetchall(); c.close()
- return page('Nouvelle association',"""<div class='card'><h2>Nouvelle association</h2><form method='post' class='form'><label>Nom<input name='name' required></label><label>Nom court<input name='short_name'></label><label>Symbole carte<input name='map_symbol' value='🌳' maxlength='8'></label><label>Wilaya<select name='wilaya_id'><option value=''>Choisir</option>{% for w in wilayas %}<option value='{{w.id}}'>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Choisir</option>{% for c in communes %}<option value='{{c.id}}'>{{c.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone'></label><label>E-mail<input type='email' name='email'></label><label class='full'>Adresse<input name='address'></label><label class='full'>Présentation<textarea name='description'></textarea></label><div class='full'><button class='btn'>Créer</button> <a class='btn alt' href='/admin/associations'>Annuler</a></div></form></div>""",wilayas=wilayas,communes=communes)
+ c=db(); wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(); communes=c.execute('SELECT * FROM communes WHERE active=1 ORDER BY name').fetchall(); symbols=available_association_symbols(c); c.close()
+ return page('Nouvelle association',"""<div class='card'><h2>Nouvelle association</h2><form method='post' class='form'><label>Nom<input name='name' required></label><label>Nom court<input name='short_name'></label><div class='full'><b>Symbole carte</b><div class='symbol-picker'>{% for symbol in symbols %}<label class='symbol-choice'><input type='radio' name='map_symbol' value='{{symbol}}' required><span>{{symbol}}</span></label>{% endfor %}</div></div><label>Wilaya<select name='wilaya_id'><option value=''>Choisir</option>{% for w in wilayas %}<option value='{{w.id}}'>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Choisir</option>{% for c in communes %}<option value='{{c.id}}'>{{c.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone'></label><label>E-mail<input type='email' name='email'></label><label class='full'>Adresse<input name='address'></label><label class='full'>Présentation<textarea name='description'></textarea></label><div class='full'><button class='btn'>Créer</button> <a class='btn alt' href='/admin/associations'>Annuler</a></div></form></div>""",wilayas=wilayas,communes=communes,symbols=symbols)
 
 @app.get('/api/associations')
 def api_associations():

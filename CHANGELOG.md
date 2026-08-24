@@ -1,14 +1,14 @@
-# Lot 12 — FIXED5 Association Approval
+# FIXED6 — Multi-profils, symboles et validation associative
 
-- Corrige l'erreur lors de l'acceptation d'une demande de création d'association.
-- Cause : nombre de paramètres SQL incorrect lors de l'INSERT dans `associations`.
-- Après acceptation :
-  - association créée avec statut `active`;
-  - demande mise à `approved`;
-  - demandeur ajouté comme `association_admin`;
-  - profil Personnel/Bénévole conservé;
-  - nouveau contexte Association ajouté au même compte;
-  - notification envoyée au demandeur.
-- Transaction rollback en cas d'erreur : aucune création partielle.
-- Redirection Super Admin vers la liste des associations après succès.
-- Aucune migration SQLite.
+- Compte unique avec profil Personnel permanent et un profil par association approuvée.
+- Sélecteur de profil disponible pour tout membre d'au moins une association.
+- Rôle affiché et appliqué association par association.
+- Bibliothèque contrôlée de symboles d'association.
+- Un symbole actif ne peut être attribué à deux associations.
+- Les demandes de création réservent leur symbole pendant l'attente.
+- Plantations associatives bénévoles : validation par Admin Association concernée OU Super Admin.
+- Plantations individuelles : validation Super Admin.
+- Première décision finale ferme la demande pour tous les validateurs.
+- Notifications d'action correspondantes synchronisées après acceptation/refus.
+- Traçabilité du validateur, rôle et association.
+- Migrations SQLite additives et non destructives.
