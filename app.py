@@ -1,8 +1,9 @@
 from flask import Flask, request, redirect, session, flash, render_template_string, send_file, url_for, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from functools import wraps
 from datetime import datetime, date, timedelta
-import sqlite3, os, io, json, shutil, tempfile, urllib.request, urllib.parse, secrets, smtplib
+import sqlite3, os, io, json, shutil, tempfile, urllib.request, urllib.parse, secrets, smtplib, base64
 from email.message import EmailMessage
 from data_catalogs import SPECIES_CATALOG, EQUIPMENT_CATALOG
 import qrcode
@@ -4484,6 +4485,679 @@ def collaboration_history_view(cid):
  if not is_super_admin() and int(aid or 0) not in (int(x['inviting_association_id']),int(x['invited_association_id'])): c.close(); return ('Accès refusé',403)
  rows=c.execute('SELECT h.*,u.name actor_name FROM association_collaboration_history h LEFT JOIN users u ON u.id=h.actor_user_id WHERE h.collaboration_id=? ORDER BY h.id DESC',(cid,)).fetchall(); c.close()
  return page('Historique collaboration',"""<div class='card'><h2>Historique collaboration</h2><table><tr><th>Date</th><th>Action</th><th>Utilisateur</th><th>Détails</th></tr>{% for h in rows %}<tr><td>{{h.created_at}}</td><td>{{h.action}}</td><td>{{h.actor_name or '—'}}</td><td>{{h.details or '—'}}</td></tr>{% endfor %}</table></div>""",rows=rows)
+
+
+# ---------------------------------------------------------------------------
+# Android API v1 — Alpha 1 Lot 4
+# Token stateless signé par MYTREE_SECRET. Le rôle global et les rôles
+# d'association restent strictement séparés.
+# ---------------------------------------------------------------------------
+def android_token_serializer():
+ return URLSafeTimedSerializer(app.secret_key,salt='mytree-android-v1')
+
+def android_issue_token(uid):
+ return android_token_serializer().dumps({'uid':int(uid)})
+
+def android_uid():
+ auth=request.headers.get('Authorization','')
+ if not auth.startswith('Bearer '): return None
+ token=auth[7:].strip()
+ try:
+  data=android_token_serializer().loads(token,max_age=60*60*24*30)
+  return int(data.get('uid') or 0) or None
+ except (BadSignature,SignatureExpired,ValueError,TypeError):
+  return None
+
+def android_auth(fn):
+ @wraps(fn)
+ def wrapped(*a,**k):
+  uid=android_uid()
+  if not uid: return jsonify({'error':{'message':'Authentification requise'}}),401
+  c=db(); u=c.execute("SELECT id FROM users WHERE id=? AND active=1",(uid,)).fetchone(); c.close()
+  if not u: return jsonify({'error':{'message':'Compte inactif ou introuvable'}}),401
+  request.android_uid=uid
+  return fn(*a,**k)
+ return wrapped
+
+def android_assoc_id(c,uid):
+ raw=request.headers.get('X-MyTree-Association-Id')
+ if not raw: return None
+ try: aid=int(raw)
+ except (TypeError,ValueError): return None
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ if u and u['role']=='super_admin': return aid
+ ok=c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+ return aid if ok else None
+
+def android_assoc_payload(c,uid):
+ rows=c.execute("""SELECT a.id,a.code,a.name,a.short_name,a.map_symbol,m.role_code
+ FROM association_memberships m JOIN associations a ON a.id=m.association_id
+ WHERE m.user_id=? AND m.status='approved' AND a.status='active' ORDER BY a.name""",(uid,)).fetchall()
+ return [dict(id=x['id'],code=x['code'],name=x['name'],short_name=x['short_name'],
+              map_symbol=x['map_symbol'] or '🌿',role_code=x['role_code']) for x in rows]
+
+def android_context_payload(c,uid,aid=None):
+ if aid:
+  a=c.execute("SELECT id,name FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+  u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+  if u and u['role']=='super_admin': role='super_admin'
+  else:
+   m=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+   if not m: aid=None
+   else: role=m['role_code']
+  if aid and a:
+   perms=list(ASSOCIATION_ROLE_PERMISSIONS.get(role,set()))
+   return {'type':'association','association_id':aid,'association_name':a['name'],'role_code':role,'permissions':perms}
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ role=(u['role'] if u else 'volunteer') or 'volunteer'
+ return {'type':'personal','association_id':None,'association_name':'Personnel','role_code':role,'permissions':[]}
+
+
+@app.get('/api/v1')
+def android_api_root():
+ return jsonify({'ok':True,'api':'v1','service':'MyTree Professional Android API','version':APP_VERSION})
+
+
+@app.get('/api/v1/app-version')
+def android_app_version():
+ latest=os.environ.get('MYTREE_ANDROID_LATEST_VERSION','0.1-alpha1-lot12-rc5')
+ minimum=os.environ.get('MYTREE_ANDROID_MIN_VERSION','0.1-alpha1')
+ maintenance=os.environ.get('MYTREE_MAINTENANCE','0').lower() in ('1','true','yes','on')
+ message=os.environ.get('MYTREE_ANDROID_UPDATE_MESSAGE','')
+ download=os.environ.get('MYTREE_ANDROID_DOWNLOAD_URL','')
+ current=request.args.get('current','')
+ def vparts(v):
+  return [int(x) for x in __import__('re').findall(r'\d+',v)]
+ def cmp(a,b):
+  x,y=vparts(a),vparts(b); n=max(len(x),len(y)); x+=([0]*(n-len(x))); y+=([0]*(n-len(y)))
+  return (x>y)-(x<y)
+ required=bool(current and cmp(current,minimum)<0)
+ available=bool(current and cmp(current,latest)<0)
+ return jsonify({
+  'api_version':'v1',
+  'latest_android_version':latest,
+  'minimum_android_version':minimum,
+  'update_required':required,
+  'update_available':available,
+  'maintenance':maintenance,
+  'message':message,
+  'download_url':download
+ })
+
+@app.get('/api/v1/status')
+def android_status():
+ return jsonify({'ok':True,'version':APP_VERSION,'api':'v1'})
+
+@app.post('/api/v1/auth/login')
+def android_login():
+ body=request.get_json(silent=True) or {}
+ login=clean(body.get('login')); password=str(body.get('password') or '')
+ c=db()
+ u=c.execute("""SELECT * FROM users WHERE active=1 AND
+ (lower(COALESCE(username,''))=lower(?) OR lower(COALESCE(email,''))=lower(?) OR phone=?) LIMIT 1""",(login,login,login)).fetchone()
+ if not u or not check_password_hash(u['password_hash'],password):
+  c.close(); return jsonify({'error':{'message':'Identifiant ou mot de passe incorrect'}}),401
+ payload={'token':android_issue_token(u['id']),
+          'user':dict(id=u['id'],name=u['name'] or '',first_name=u['first_name'] or '',last_name=u['last_name'] or '',
+                      phone=u['phone'] or '',email=u['email'] or '',preferred_language=u['preferred_language'] or 'fr'),
+          'associations':android_assoc_payload(c,u['id'])}
+ c.close(); return jsonify(payload)
+
+@app.get('/api/v1/auth/me')
+@android_auth
+def android_me():
+ c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(request.android_uid,)).fetchone()
+ out={'user':dict(id=u['id'],name=u['name'] or '',first_name=u['first_name'] or '',last_name=u['last_name'] or '',
+                  phone=u['phone'] or '',email=u['email'] or '',preferred_language=u['preferred_language'] or 'fr')}
+ c.close(); return jsonify(out)
+
+@app.post('/api/v1/auth/logout')
+@android_auth
+def android_logout():
+ return jsonify({'ok':True})
+
+@app.get('/api/v1/associations')
+@android_auth
+def android_associations():
+ c=db(); rows=android_assoc_payload(c,request.android_uid); c.close()
+ return jsonify({'associations':rows})
+
+@app.post('/api/v1/context/association')
+@android_auth
+def android_context():
+ body=request.get_json(silent=True) or {}; raw=body.get('association_id'); aid=None
+ c=db()
+ if raw not in (None,'',False):
+  try: wanted=int(raw)
+  except (TypeError,ValueError): wanted=0
+  if wanted:
+   u=c.execute("SELECT role FROM users WHERE id=?",(request.android_uid,)).fetchone()
+   if u and u['role']=='super_admin': aid=wanted
+   elif c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(wanted,request.android_uid)).fetchone(): aid=wanted
+ ctx=android_context_payload(c,request.android_uid,aid); c.close()
+ return jsonify({'context':ctx})
+
+@app.get('/api/v1/home')
+@android_auth
+def android_home():
+ c=db(); aid=android_assoc_id(c,request.android_uid)
+ if aid:
+  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
+  proj_n=c.execute("SELECT COUNT(*) n FROM projects WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
+  zone_n=c.execute("SELECT COUNT(*) n FROM zones WHERE active=1 AND association_id=?",(aid,)).fetchone()['n'] if 'association_id' in columns(c,'zones') else 0
+  miss_n=c.execute("SELECT COUNT(*) n FROM missions WHERE active=1 AND association_id=?",(aid,)).fetchone()['n'] if 'association_id' in columns(c,'missions') else 0
+ else:
+  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND planted_by_user_id=?",(request.android_uid,)).fetchone()['n']
+  proj_n=zone_n=miss_n=0
+ unread=c.execute("SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0",(request.android_uid,)).fetchone()['n']
+ c.close(); return jsonify({'home':{'unread_notifications':unread,'counts':{'trees':tree_n,'projects':proj_n,'zones':zone_n,'missions':miss_n}}})
+
+@app.get('/api/v1/map')
+@android_auth
+def android_map():
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid); mine=request.args.get('mine')=='1'
+ w=["t.active=1","t.approval_status='approved'","t.latitude IS NOT NULL","t.longitude IS NOT NULL"]; args=[]
+ if mine: w.append("t.planted_by_user_id=?"); args.append(uid)
+ elif aid: w.append("t.association_id=?"); args.append(aid)
+ rows=c.execute("""SELECT t.id,t.tree_code,t.species,t.species_id,t.latitude,t.longitude,t.association_id,
+ s.name_fr species_name,a.name association_name,a.map_symbol,u.name planter_name
+ FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
+ LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC",args).fetchall()
+ trees=[dict(id=x['id'],code=x['tree_code'] or '',species=x['species'] or '',species_name=x['species_name'] or x['species'] or 'Arbre',
+             lat=x['latitude'],lng=x['longitude'],symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
+             association_id=x['association_id'],association_name=x['association_name'],planter_name=x['planter_name']) for x in rows]
+ zones=[]; events=[]
+ if request.args.get('zones')=='1':
+  q="SELECT z.id,z.name,z.latitude lat,z.longitude lng FROM zones z WHERE z.active=1 AND z.latitude IS NOT NULL AND z.longitude IS NOT NULL"
+  args2=[]
+  if aid and 'association_id' in columns(c,'zones'): q+=' AND z.association_id=?'; args2=[aid]
+  zones=[dict(x) for x in c.execute(q,args2).fetchall()]
+ if request.args.get('events')=='1':
+  q="SELECT e.id,e.title name,e.latitude lat,e.longitude lng FROM events e WHERE e.active=1 AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL"
+  args3=[]
+  if aid and 'association_id' in columns(c,'events'): q+=' AND e.association_id=?'; args3=[aid]
+  elif aid: q+=' AND (e.project_id IN (SELECT id FROM projects WHERE association_id=?))'; args3=[aid]
+  events=[dict(x) for x in c.execute(q,args3).fetchall()]
+ c.close(); return jsonify({'trees':trees,'zones':zones,'events':events})
+
+@app.get('/api/v1/trees/<int:tid>')
+@android_auth
+def android_tree_detail(tid):
+ c=db(); x=c.execute("""SELECT t.*,s.name_fr species_name,a.name association_name,p.name project_name,z.name zone_name,u.name planter_name
+ FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
+ LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN users u ON u.id=t.planted_by_user_id
+ WHERE t.id=? AND t.active=1""",(tid,)).fetchone()
+ if not x: c.close(); return jsonify({'error':{'message':'Arbre introuvable'}}),404
+ out={'id':x['id'],'code':x['tree_code'] or '','species':x['species_name'] or x['species'] or 'Arbre',
+      'health_status':x['health_status'] or '','watering_status':x['watering_status'] or '',
+      'planted_at':x['planted_at'] or '','planter_name':x['planter_name'] or x['planted_by'] or '',
+      'association_name':x['association_name'],'project_name':x['project_name'],'zone_name':x['zone_name'],
+      'latitude':x['latitude'],'longitude':x['longitude'],'approval_status':x['approval_status'] or '',
+      'last_watered_at':x['last_watered_at'],'notes':x['notes']}
+ c.close(); return jsonify({'tree':out})
+
+@app.post('/api/v1/trees/<int:tid>/water')
+@android_auth
+def android_tree_water(tid):
+ body=request.get_json(silent=True) or {}; c=db()
+ t=c.execute("SELECT * FROM trees WHERE id=? AND active=1 AND approval_status='approved'",(tid,)).fetchone()
+ if not t: c.close(); return jsonify({'error':{'message':'Arbre introuvable ou non validé'}}),404
+ now=datetime.now().isoformat(timespec='minutes')
+ qty=body.get('quantity_liters'); notes=clean(body.get('notes'))
+ c.execute("""INSERT INTO watering_logs(tree_id,watered_at,user_id,quantity_liters,notes,latitude,longitude,created_at)
+ VALUES(?,?,?,?,?,?,?,?)""",(tid,now,request.android_uid,qty,notes,body.get('latitude'),body.get('longitude'),now))
+ c.execute("UPDATE trees SET last_watered_at=?,watering_status='À jour' WHERE id=?",(now,tid))
+ c.commit(); c.close()
+ return jsonify({'ok':True,'message':'Arrosage enregistré avec succès.'})
+
+@app.get('/api/v1/scan')
+@android_auth
+def android_scan():
+ code=clean(request.args.get('code')); c=db()
+ x=c.execute("SELECT id,tree_code FROM trees WHERE active=1 AND (upper(tree_code)=upper(?) OR upper(qr_code)=upper(?))",(code,code)).fetchone()
+ c.close()
+ if not x: return jsonify({'error':{'message':'Aucun arbre trouvé pour ce QR/code'}}),404
+ return jsonify({'tree':{'id':x['id'],'code':x['tree_code'] or ''}})
+
+@app.post('/api/v1/plantings')
+@android_auth
+def android_create_planting():
+ body=request.get_json(silent=True) or {}; c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
+ species_id=body.get('species_id'); species=clean(body.get('species')); now=datetime.now().isoformat(timespec='minutes')
+ if not species_id and not species:
+  c.close(); return jsonify({'error':{'message':'Espèce obligatoire'}}),400
+ if species_id:
+  sp=c.execute("SELECT name_fr FROM species WHERE id=? AND active=1",(species_id,)).fetchone()
+  if not sp: c.close(); return jsonify({'error':{'message':'Espèce invalide'}}),400
+  species=sp['name_fr']
+ project_id=body.get('project_id'); zone_id=body.get('zone_id')
+ if zone_id:
+  z=c.execute("SELECT id,project_id,target_trees FROM zones WHERE id=? AND active=1",(zone_id,)).fetchone()
+  if not z: c.close(); return jsonify({'error':{'message':'Zone invalide'}}),400
+  if project_id and int(z['project_id'])!=int(project_id): c.close(); return jsonify({'error':{'message':'La zone ne correspond pas au projet sélectionné'}}),400
+  if z['target_trees']:
+   n=c.execute("SELECT COUNT(*) n FROM trees WHERE zone_id=? AND active=1 AND approval_status IN ('pending','approved')",(zone_id,)).fetchone()['n']
+   if n>=int(z['target_trees']): c.close(); return jsonify({'error':{'message':'Objectif maximal de la zone atteint'}}),409
+ if project_id:
+  pr=c.execute("SELECT id,target_trees,association_id FROM projects WHERE id=? AND active=1",(project_id,)).fetchone()
+  if not pr: c.close(); return jsonify({'error':{'message':'Projet invalide'}}),400
+  if aid and int(pr['association_id'] or 0)!=int(aid): c.close(); return jsonify({'error':{'message':'Projet hors du périmètre de l’association active'}}),403
+  if pr['target_trees']:
+   n=c.execute("SELECT COUNT(*) n FROM trees WHERE project_id=? AND active=1 AND approval_status IN ('pending','approved')",(project_id,)).fetchone()['n']
+   if n>=int(pr['target_trees']): c.close(); return jsonify({'error':{'message':'Objectif maximal du projet atteint'}}),409
+ cur=c.execute("""INSERT INTO trees(species_id,species,project_id,zone_id,planted_at,planted_by_user_id,planted_by,
+ latitude,longitude,health_status,watering_status,approval_status,association_id,notes,active,created_at)
+ VALUES(?,?,?,?,?,?,?,?,?,'Bon','À jour','pending',?,?,1,?)""",
+ (species_id,species,body.get('project_id'),body.get('zone_id'),date.today().isoformat(),uid,
+  c.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()['name'],body.get('latitude'),body.get('longitude'),aid,clean(body.get('notes')),now))
+ tid=cur.lastrowid
+ # Une plantation associative est visible dans la même file pending par les admins de l'association et le Super Admin.
+ if aid:
+  admins=c.execute("SELECT user_id FROM association_memberships WHERE association_id=? AND status='approved' AND role_code IN ('association_admin','admin')",(aid,)).fetchall()
+  notify={int(x['user_id']) for x in admins}
+ else: notify=set()
+ notify.update(int(x['id']) for x in c.execute("SELECT id FROM users WHERE active=1 AND role='super_admin'").fetchall())
+ for target in notify:
+  if target==uid: continue
+  c.execute("INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)",
+            (target,'Plantation à valider','Une nouvelle plantation Android attend une validation.','/plantings/pending','Action requise','planting_review',tid,now))
+ c.commit(); c.close()
+ return jsonify({'ok':True,'tree_id':tid,'status':'pending','message':'Plantation envoyée pour validation.'}),201
+
+
+@app.get('/api/v1/field-options')
+@android_auth
+def android_field_options():
+ c=db(); aid=android_assoc_id(c,request.android_uid)
+ species=[{'id':x['id'],'name':x['name_fr']} for x in c.execute("SELECT id,name_fr FROM species WHERE active=1 ORDER BY name_fr").fetchall()]
+ if aid:
+  projects=[{'id':x['id'],'name':x['name']} for x in c.execute("SELECT id,name FROM projects WHERE active=1 AND association_id=? ORDER BY name",(aid,)).fetchall()]
+ else:
+  projects=[{'id':x['id'],'name':x['name']} for x in c.execute("SELECT id,name FROM projects WHERE active=1 AND (association_id IS NULL OR association_id=0) ORDER BY name").fetchall()]
+ pids=[x['id'] for x in projects]; zones=[]
+ if pids:
+  marks=','.join('?'*len(pids))
+  zones=[{'id':x['id'],'project_id':x['project_id'],'name':x['name']} for x in c.execute(f"SELECT id,project_id,name FROM zones WHERE active=1 AND project_id IN ({marks}) ORDER BY name",pids).fetchall()]
+ c.close(); return jsonify({'species':species,'projects':projects,'zones':zones})
+
+@app.get('/api/v1/trees/<int:tid>/history')
+@android_auth
+def android_tree_history(tid):
+ c=db(); items=[]
+ t=c.execute("SELECT id,planted_at,planted_by,approval_status,approved_at,rejection_reason FROM trees WHERE id=? AND active=1",(tid,)).fetchone()
+ if not t: c.close(); return jsonify({'error':{'message':'Arbre introuvable'}}),404
+ items.append({'type':'planting','date':t['planted_at'] or '','title':'Plantation','details':(t['planted_by'] or '')+' · '+(t['approval_status'] or '')})
+ for x in c.execute("SELECT watered_at,quantity_liters,notes FROM watering_logs WHERE tree_id=? ORDER BY id DESC",(tid,)).fetchall():
+  q=(str(x['quantity_liters'])+' L') if x['quantity_liters'] is not None else ''
+  items.append({'type':'watering','date':x['watered_at'] or '','title':'Arrosage','details':' · '.join(v for v in [q,x['notes'] or ''] if v)})
+ for x in c.execute("SELECT performed_at,intervention_type,notes FROM interventions WHERE tree_id=? ORDER BY id DESC",(tid,)).fetchall():
+  items.append({'type':'intervention','date':x['performed_at'] or '','title':x['intervention_type'] or 'Intervention','details':x['notes'] or ''})
+ for x in c.execute("SELECT created_at,caption FROM tree_photos WHERE tree_id=? ORDER BY id DESC",(tid,)).fetchall():
+  items.append({'type':'photo','date':x['created_at'] or '','title':'Photo terrain','details':x['caption'] or ''})
+ items.sort(key=lambda x:x.get('date') or '',reverse=True)
+ c.close(); return jsonify({'items':items})
+
+@app.post('/api/v1/trees/<int:tid>/interventions')
+@android_auth
+def android_tree_intervention(tid):
+ body=request.get_json(silent=True) or {}; typ=clean(body.get('intervention_type')); notes=clean(body.get('notes'))
+ if not typ: return jsonify({'error':{'message':'Type d’intervention obligatoire'}}),400
+ c=db(); t=c.execute("SELECT id FROM trees WHERE id=? AND active=1 AND approval_status='approved'",(tid,)).fetchone()
+ if not t: c.close(); return jsonify({'error':{'message':'Arbre introuvable ou non validé'}}),404
+ now=datetime.now().isoformat(timespec='minutes')
+ c.execute("""INSERT INTO interventions(tree_id,user_id,intervention_type,status,performed_at,notes,created_at)
+ VALUES(?,?,?,'Réalisée',?,?,?)""",(tid,request.android_uid,typ,now,notes,now))
+ c.commit(); c.close(); return jsonify({'ok':True,'message':'Intervention enregistrée avec succès.'})
+
+@app.post('/api/v1/trees/<int:tid>/photos')
+@android_auth
+def android_tree_photo(tid):
+ body=request.get_json(silent=True) or {}; raw=str(body.get('image_base64') or ''); caption=clean(body.get('caption'))
+ if not raw: return jsonify({'error':{'message':'Photo obligatoire'}}),400
+ try:
+  data=base64.b64decode(raw,validate=True)
+ except Exception:
+  return jsonify({'error':{'message':'Photo invalide'}}),400
+ if len(data)>8*1024*1024: return jsonify({'error':{'message':'Photo trop volumineuse (8 Mo maximum)'}}),413
+ c=db(); t=c.execute("SELECT id FROM trees WHERE id=? AND active=1",(tid,)).fetchone()
+ if not t: c.close(); return jsonify({'error':{'message':'Arbre introuvable'}}),404
+ folder=os.path.join(DATA_DIR,'uploads','android'); os.makedirs(folder,exist_ok=True)
+ name='tree-'+str(tid)+'-'+secrets.token_hex(8)+'.jpg'; path=os.path.join(folder,name)
+ with open(path,'wb') as f: f.write(data)
+ rel='uploads/android/'+name; now=datetime.now().isoformat(timespec='minutes')
+ c.execute("INSERT INTO tree_photos(tree_id,photo_url,caption,created_by_user_id,created_at) VALUES(?,?,?,?,?)",(tid,rel,caption,request.android_uid,now))
+ c.commit(); c.close(); return jsonify({'ok':True,'message':'Photo terrain enregistrée.','photo_url':'/api/v1/media/'+name}),201
+
+@app.get('/api/v1/media/<path:name>')
+@android_auth
+def android_media(name):
+ safe=os.path.basename(name); path=os.path.join(DATA_DIR,'uploads','android',safe)
+ if not os.path.isfile(path): return jsonify({'error':{'message':'Fichier introuvable'}}),404
+ return send_file(path,mimetype='image/jpeg')
+
+
+@app.get('/api/v1/notifications')
+@android_auth
+def android_notifications():
+ c=db()
+ rows=c.execute("""SELECT id,title,message,category,action_type,action_id,is_read,created_at
+ FROM notifications WHERE user_id=? OR user_id IS NULL ORDER BY is_read ASC,id DESC LIMIT 100""",(request.android_uid,)).fetchall()
+ out=[dict(id=x['id'],title=x['title'] or '',message=x['message'] or '',category=x['category'] or '',
+           action_type=x['action_type'],action_id=x['action_id'],is_read=bool(x['is_read']),created_at=x['created_at'] or '') for x in rows]
+ c.close(); return jsonify({'notifications':out})
+
+@app.post('/api/v1/notifications/<int:nid>/read')
+@android_auth
+def android_notification_read(nid):
+ c=db()
+ n=c.execute("SELECT id FROM notifications WHERE id=? AND (user_id=? OR user_id IS NULL)",(nid,request.android_uid)).fetchone()
+ if not n: c.close(); return jsonify({'error':{'message':'Notification introuvable'}}),404
+ c.execute("UPDATE notifications SET is_read=1 WHERE id=?",(nid,)); c.commit(); c.close()
+ return jsonify({'ok':True})
+
+@app.post('/api/v1/offline-operations/<op_type>')
+@android_auth
+def android_offline_operation(op_type):
+ body=request.get_json(silent=True) or {}; key=clean(body.get('idempotency_key'))
+ if not key: return jsonify({'error':{'message':'Clé idempotente obligatoire'}}),400
+ c=db()
+ c.execute("""CREATE TABLE IF NOT EXISTS android_operation_keys(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, idempotency_key TEXT NOT NULL,
+  operation_type TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(user_id,idempotency_key)
+ )""")
+ already=c.execute("SELECT id FROM android_operation_keys WHERE user_id=? AND idempotency_key=?",(request.android_uid,key)).fetchone()
+ if already: c.close(); return jsonify({'ok':True,'duplicate':True,'message':'Opération déjà synchronisée.'})
+ if op_type=='intervention':
+  tid=int(body.get('tree_id') or 0); typ=clean(body.get('intervention_type')); notes=clean(body.get('notes'))
+  t=c.execute("SELECT id FROM trees WHERE id=? AND active=1 AND approval_status='approved'",(tid,)).fetchone()
+  if not t or not typ: c.close(); return jsonify({'error':{'message':'Intervention hors ligne invalide'}}),400
+  now=datetime.now().isoformat(timespec='minutes')
+  c.execute("""INSERT INTO interventions(tree_id,user_id,intervention_type,status,performed_at,notes,created_at)
+  VALUES(?,?,?,'Réalisée',?,?,?)""",(tid,request.android_uid,typ,now,notes,now))
+ else:
+  c.close(); return jsonify({'error':{'message':'Type d’opération hors ligne non pris en charge'}}),400
+ c.execute("INSERT INTO android_operation_keys(user_id,idempotency_key,operation_type,created_at) VALUES(?,?,?,?)",
+           (request.android_uid,key,op_type,datetime.now().isoformat(timespec='minutes')))
+ c.commit(); c.close(); return jsonify({'ok':True,'message':'Opération synchronisée.'})
+
+
+# Android Lot 8 — Associations: mêmes données/rôles que MyTree Web.
+@app.get('/api/v1/associations/<int:aid>')
+@android_auth
+def android_association_details(aid):
+ c=db(); uid=request.android_uid
+ a=c.execute("SELECT * FROM associations WHERE id=?",(aid,)).fetchone()
+ if not a: c.close(); return jsonify({'error':{'message':'Association introuvable'}}),404
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ m=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+ role='super_admin' if u and u['role']=='super_admin' else (m['role_code'] if m else '')
+ if not role: c.close(); return jsonify({'error':{'message':'Accès refusé'}}),403
+ counts={
+  'members':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n'],
+  'trees':c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n'],
+  'projects':c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n']}
+ out={'id':a['id'],'name':a['name'],'code':a['code'],'short_name':a['short_name'] or '',
+      'description':a['description'] or '','symbol':a['map_symbol'] or '🌿','status':a['status'],
+      **counts,'my_role':role,'can_edit':role in ('super_admin','association_admin','admin'),
+      'can_archive':role in ('super_admin','association_admin','admin')}
+ c.close(); return jsonify({'association':out})
+
+@app.get('/api/v1/associations/<int:aid>/members')
+@android_auth
+def android_association_members(aid):
+ c=db(); uid=request.android_uid
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ mine=c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+ if not (mine or (u and u['role']=='super_admin')): c.close(); return jsonify({'error':{'message':'Accès refusé'}}),403
+ rows=c.execute("""SELECT m.user_id,u.name,m.role_code,m.status FROM association_memberships m
+ JOIN users u ON u.id=m.user_id WHERE m.association_id=? ORDER BY m.status,u.name""",(aid,)).fetchall()
+ c.close(); return jsonify({'members':[dict(x) for x in rows]})
+
+@app.post('/api/v1/associations/<int:aid>')
+@android_auth
+def android_association_update(aid):
+ body=request.get_json(silent=True) or {}; c=db(); uid=request.android_uid
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ m=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+ role='super_admin' if u and u['role']=='super_admin' else (m['role_code'] if m else '')
+ if role not in ('super_admin','association_admin','admin'): c.close(); return jsonify({'error':{'message':'Permission insuffisante'}}),403
+ name=clean(body.get('name')); desc=clean(body.get('description')); symbol=clean(body.get('map_symbol'))
+ if not name: c.close(); return jsonify({'error':{'message':'Nom obligatoire'}}),400
+ if symbol:
+  used=c.execute("SELECT id FROM associations WHERE map_symbol=? AND id<>? AND status='active'",(symbol,aid)).fetchone()
+  if used: c.close(); return jsonify({'error':{'message':'Ce symbole est déjà utilisé par une autre association'}}),409
+ c.execute("UPDATE associations SET name=?,description=?,map_symbol=? WHERE id=?",(name,desc,symbol or '🌿',aid)); c.commit(); c.close()
+ return jsonify({'ok':True,'message':'Association modifiée.'})
+
+@app.get('/api/v1/associations/<int:aid>/symbols')
+@android_auth
+def android_association_symbols(aid):
+ symbols=['🌳','🌲','🌴','🌿','🍃','🌱','🪴','🌵','🍀','🌾','🫒','🌺']
+ c=db(); used={x['map_symbol'] for x in c.execute("SELECT map_symbol FROM associations WHERE status='active' AND id<>? AND map_symbol IS NOT NULL",(aid,)).fetchall()}
+ c.close(); return jsonify({'symbols':[{'symbol':x,'available':x not in used} for x in symbols]})
+
+@app.post('/api/v1/associations/<int:aid>/archive-request')
+@android_auth
+def android_association_archive_request(aid):
+ c=db(); uid=request.android_uid
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ if u and u['role']=='super_admin':
+  c.execute("UPDATE associations SET status='archived',updated_at=? WHERE id=?",(datetime.now().isoformat(timespec='minutes'),aid))
+  c.execute("UPDATE association_archive_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=? WHERE association_id=? AND status='pending'",
+            (uid,datetime.now().isoformat(timespec='minutes'),aid))
+  c.commit(); c.close()
+  return jsonify({'ok':True,'message':'Association archivée.'})
+ m=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+ if not m or m['role_code'] not in ('association_admin','admin'): c.close(); return jsonify({'error':{'message':'Permission insuffisante'}}),403
+ existing=c.execute("SELECT id FROM association_archive_requests WHERE association_id=? AND status='pending'",(aid,)).fetchone()
+ if existing: c.close(); return jsonify({'ok':True,'message':'Une demande d’archivage est déjà en attente.'})
+ now=datetime.now().isoformat(timespec='minutes')
+ c.execute("INSERT INTO association_archive_requests(association_id,requested_by_user_id,status,reason,requested_at) VALUES(?,?,'pending','Demande depuis Android',?)",(aid,uid,now))
+ for x in c.execute("SELECT id FROM users WHERE active=1 AND role='super_admin'").fetchall():
+  c.execute("INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)",
+   (x['id'],'Demande d’archivage association','Un administrateur demande l’archivage de son association.','/admin/association-archive-requests','Action requise','association_archive',aid,now))
+ c.commit(); c.close(); return jsonify({'ok':True,'message':'Demande d’archivage envoyée au Super Admin.'})
+
+# Android Lot 9 — Projets, Zones, Événements, Équipes & Missions
+@app.get('/api/v1/operations')
+@android_auth
+def android_operations():
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ super_admin=bool(u and u['role']=='super_admin')
+
+ def scope_sql(table_alias,project_alias=None):
+  if super_admin and not aid: return ('1=1',[])
+  if aid:
+   col=table_alias+'.association_id' if 'association_id' in columns(c,table_alias.split('.')[-1]) else None
+   if col: return (col+'=?',[aid])
+   if project_alias: return (project_alias+'.association_id=?',[aid])
+   return ('1=1',[])
+  return ('1=0',[])
+
+ # Projects are the primary association scope.
+ pw,pp=("1=1",[]) if super_admin and not aid else (("p.association_id=?",[aid]) if aid else ("1=0",[]))
+ projects=c.execute("""SELECT p.id,p.code,p.name,p.status,p.target_trees FROM projects p
+ WHERE p.active=1 AND """+pw+" ORDER BY p.name",pp).fetchall()
+
+ pids=[x['id'] for x in projects]
+ if pids:
+  marks=','.join('?'*len(pids))
+  zones=c.execute(f"SELECT id,project_id,code,name,target_trees FROM zones WHERE active=1 AND project_id IN ({marks}) ORDER BY name",pids).fetchall()
+  events=c.execute(f"""SELECT e.id,e.title,e.event_type,e.status,e.start_at,p.name project_name,z.name zone_name
+   FROM events e LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN zones z ON z.id=e.zone_id
+   WHERE e.active=1 AND (e.project_id IN ({marks}) OR e.project_id IS NULL) ORDER BY e.start_at DESC""",pids).fetchall()
+  teams=c.execute(f"""SELECT t.id,t.code,t.name,u.name leader_name,p.name project_name,
+   (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id=t.id AND tm.status='active') member_count
+   FROM teams t LEFT JOIN users u ON u.id=t.leader_user_id LEFT JOIN projects p ON p.id=t.project_id
+   WHERE t.active=1 AND (t.project_id IN ({marks}) OR t.project_id IS NULL) ORDER BY t.name""",pids).fetchall()
+  missions=c.execute(f"""SELECT m.id,m.code,m.title,m.mission_type,m.status,m.priority,m.start_at,m.target_count,m.completed_count,
+   p.name project_name,z.name zone_name,t.name team_name
+   FROM missions m LEFT JOIN projects p ON p.id=m.project_id LEFT JOIN zones z ON z.id=m.zone_id LEFT JOIN teams t ON t.id=m.team_id
+   WHERE m.active=1 AND (m.project_id IN ({marks}) OR m.project_id IS NULL) ORDER BY COALESCE(m.start_at,m.created_at) DESC""",pids).fetchall()
+ else:
+  zones=[];events=[];teams=[];missions=[]
+ c.close()
+ return jsonify({
+  'projects':[dict(x) for x in projects],
+  'zones':[dict(x) for x in zones],
+  'events':[dict(x) for x in events],
+  'teams':[dict(x) for x in teams],
+  'missions':[dict(x) for x in missions]
+ })
+
+@app.post('/api/v1/missions/<int:mid>/status')
+@android_auth
+def android_mission_status(mid):
+ body=request.get_json(silent=True) or {}; status=clean(body.get('status'))
+ allowed={'Planifiée','En cours','Terminée','Annulée'}
+ if status not in allowed: return jsonify({'error':{'message':'Statut de mission invalide'}}),400
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
+ m=c.execute("SELECT * FROM missions WHERE id=? AND active=1",(mid,)).fetchone()
+ if not m: c.close(); return jsonify({'error':{'message':'Mission introuvable'}}),404
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ if u and u['role']=='super_admin': permitted=True
+ elif aid:
+  mem=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+  project=c.execute("SELECT association_id FROM projects WHERE id=?",(m['project_id'],)).fetchone() if m['project_id'] else None
+  permitted=bool(mem and mem['role_code'] in ('association_admin','admin') and (not project or int(project['association_id'] or 0)==int(aid)))
+ else: permitted=False
+ if not permitted: c.close(); return jsonify({'error':{'message':'Permission insuffisante'}}),403
+ c.execute("UPDATE missions SET status=?,updated_at=? WHERE id=?",(status,datetime.now().isoformat(timespec='minutes'),mid))
+ c.commit(); c.close(); return jsonify({'ok':True,'message':'Statut de la mission mis à jour.'})
+
+
+# Android Lot 10 — Plantations & validations complètes
+@app.get('/api/v1/plantings/pending')
+@android_auth
+def android_pending_plantings():
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ super_admin=bool(u and u['role']=='super_admin')
+ if super_admin and not aid:
+  where="t.approval_status='pending'"; params=[]
+ elif aid:
+  mem=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+  if not mem or mem['role_code'] not in ('association_admin','admin'):
+   c.close(); return jsonify({'error':{'message':'Permission insuffisante'}}),403
+  where="t.approval_status='pending' AND t.association_id=?"; params=[aid]
+ else:
+  c.close(); return jsonify({'items':[]})
+ rows=c.execute("""SELECT t.id,t.species,t.planted_by,t.planted_at,t.approval_status,t.notes,t.latitude,t.longitude,
+ a.name association_name,p.name project_name,z.name zone_name
+ FROM trees t LEFT JOIN associations a ON a.id=t.association_id
+ LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id
+ WHERE t.active=1 AND """+where+" ORDER BY t.id DESC",params).fetchall()
+ c.close()
+ return jsonify({'items':[dict(id=x['id'],species=x['species'] or '',planter=x['planted_by'] or '',
+ association_name=x['association_name'],project_name=x['project_name'],zone_name=x['zone_name'],
+ planted_at=x['planted_at'] or '',status=x['approval_status'],notes=x['notes'] or '',
+ latitude=x['latitude'],longitude=x['longitude']) for x in rows]})
+
+@app.post('/api/v1/plantings/<int:tid>/review')
+@android_auth
+def android_review_planting(tid):
+ body=request.get_json(silent=True) or {}; decision=clean(body.get('decision')).lower(); reason=clean(body.get('reason'))
+ if decision not in ('approve','reject'): return jsonify({'error':{'message':'Décision invalide'}}),400
+ if decision=='reject' and not reason: return jsonify({'error':{'message':'Motif du refus obligatoire'}}),400
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
+ t=c.execute("SELECT * FROM trees WHERE id=? AND active=1",(tid,)).fetchone()
+ if not t: c.close(); return jsonify({'error':{'message':'Plantation introuvable'}}),404
+ if t['approval_status']!='pending':
+  c.close(); return jsonify({'error':{'message':'Cette plantation a déjà été traitée'}}),409
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone()
+ super_admin=bool(u and u['role']=='super_admin')
+ permitted=super_admin
+ if not permitted and aid and t['association_id'] and int(t['association_id'])==int(aid):
+  mem=c.execute("SELECT role_code FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,uid)).fetchone()
+  permitted=bool(mem and mem['role_code'] in ('association_admin','admin'))
+ if not permitted: c.close(); return jsonify({'error':{'message':'Permission insuffisante'}}),403
+
+ now=datetime.now().isoformat(timespec='minutes')
+ status='approved' if decision=='approve' else 'rejected'
+ c.execute("UPDATE trees SET approval_status=?,approved_by_user_id=?,approved_at=?,rejection_reason=? WHERE id=?",
+           (status,uid,now,None if decision=='approve' else reason,tid))
+ c.execute("INSERT INTO planting_reviews(tree_id,reviewer_user_id,decision,reason,created_at) VALUES(?,?,?,?,?)",
+           (tid,uid,decision,reason,now))
+
+ # Une seule décision centrale : toutes les notifications de validation liées à cet arbre sont traitées.
+ c.execute("""UPDATE notifications SET is_read=1,decision=?,processed_at=?,read_at=COALESCE(read_at,?)
+ WHERE action_type='planting_review' AND action_id=?""",(decision,now,now,tid))
+
+ planter=t['planted_by_user_id']
+ if planter:
+  title='Plantation acceptée' if decision=='approve' else 'Plantation refusée'
+  msg='Votre plantation a été validée.' if decision=='approve' else ('Votre plantation a été refusée : '+reason)
+  c.execute("""INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at)
+   VALUES(?,?,?,?,?,?,?,0,?)""",(planter,title,msg,'/trees/'+str(tid),'Plantation','tree',tid,now))
+ c.commit(); c.close()
+ return jsonify({'ok':True,'status':status,'message':'Plantation acceptée.' if decision=='approve' else 'Plantation refusée.'})
+
+
+# Android Lot 11 — Administration centrale
+def require_android_super_admin(c):
+ u=c.execute("SELECT role FROM users WHERE id=?",(request.android_uid,)).fetchone()
+ return bool(u and u['role']=='super_admin')
+
+@app.get('/api/v1/admin/volunteers')
+@android_auth
+def android_admin_volunteers():
+ c=db()
+ if not require_android_super_admin(c): c.close(); return jsonify({'error':{'message':'Accès Super Admin requis'}}),403
+ q=clean(request.args.get('q')).lower()
+ where="u.active=1 AND u.role<>'super_admin'"; params=[]
+ if q:
+  where+=" AND (LOWER(COALESCE(u.name,'')) LIKE ? OR LOWER(COALESCE(u.email,'')) LIKE ? OR LOWER(COALESCE(u.phone,'')) LIKE ?)"
+  like='%'+q+'%'; params=[like,like,like]
+ rows=c.execute("""SELECT u.id,u.name,u.email,u.phone,u.status,u.created_at,
+ (SELECT COUNT(*) FROM association_memberships am WHERE am.user_id=u.id AND am.status='approved') association_count,
+ (SELECT COUNT(*) FROM trees t WHERE t.planted_by_user_id=u.id AND t.active=1) tree_count
+ FROM users u WHERE """+where+" ORDER BY u.name LIMIT 250",params).fetchall()
+ c.close()
+ return jsonify({'items':[dict(id=x['id'],name=x['name'] or '',email=x['email'],phone=x['phone'],status=x['status'] or '',
+ joined_at=x['created_at'] or '',association_count=x['association_count'],tree_count=x['tree_count']) for x in rows]})
+
+@app.get('/api/v1/admin/association-requests')
+@android_auth
+def android_admin_association_requests():
+ c=db()
+ if not require_android_super_admin(c): c.close(); return jsonify({'error':{'message':'Accès Super Admin requis'}}),403
+ rows=c.execute("""SELECT r.id,r.requested_by_user_id,r.name,r.status,r.requested_at,u.name requester_name
+ FROM association_creation_requests r JOIN users u ON u.id=r.requested_by_user_id
+ WHERE r.status='pending' ORDER BY r.id DESC""").fetchall()
+ c.close(); return jsonify({'items':[dict(id=x['id'],requester_id=x['requested_by_user_id'],requested_name=x['name'],
+ requester_name=x['requester_name'] or '',status=x['status'],created_at=x['requested_at']) for x in rows]})
+
+@app.post('/api/v1/admin/association-requests/<int:rid>/review')
+@android_auth
+def android_admin_association_request_review(rid):
+ body=request.get_json(silent=True) or {}; decision=clean(body.get('decision')).lower(); reason=clean(body.get('reason'))
+ if decision not in ('approve','reject'): return jsonify({'error':{'message':'Décision invalide'}}),400
+ if decision=='reject' and not reason: return jsonify({'error':{'message':'Motif obligatoire'}}),400
+ c=db()
+ if not require_android_super_admin(c): c.close(); return jsonify({'error':{'message':'Accès Super Admin requis'}}),403
+ r=c.execute("SELECT * FROM association_creation_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
+ if not r: c.close(); return jsonify({'error':{'message':'Demande introuvable ou déjà traitée'}}),409
+ now=datetime.now().isoformat(timespec='minutes')
+ if decision=='approve':
+  code=association_code(c)
+  cur=c.execute("""INSERT INTO associations(code,name,description,wilaya_id,commune_id,address,phone,email,status,created_by_user_id,created_at)
+   VALUES(?,?,?,?,?,?,?,?, 'active',?,?)""",
+   (code,r['name'],r['description'],r['wilaya_id'],r['commune_id'],r['address'],r['phone'],r['email'],request.android_uid,now))
+  aid=cur.lastrowid
+  c.execute("""INSERT OR REPLACE INTO association_memberships(
+   association_id,user_id,member_kind,role_code,status,requested_at,reviewed_by_user_id,reviewed_at)
+   VALUES(?,?,'volunteer','association_admin','approved',?,?,?)""",
+   (aid,r['requested_by_user_id'],r['requested_at'],request.android_uid,now))
+  status='approved'; msg='Votre association a été créée. Votre profil Personnel reste actif et le profil Association est maintenant disponible.'
+ else:
+  status='rejected'; msg='Votre demande de création d’association a été refusée : '+reason
+ c.execute("UPDATE association_creation_requests SET status=?,reviewed_by_user_id=?,reviewed_at=?,rejection_reason=? WHERE id=?",
+           (status,request.android_uid,now,None if decision=='approve' else reason,rid))
+ c.execute("""INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at)
+ VALUES(?,?,?,?,?,?,?,0,?)""",(r['requested_by_user_id'],'Demande d’association',msg,'/my-associations','Association','association_request',rid,now))
+ c.commit(); c.close()
+ return jsonify({'ok':True,'message':'Demande acceptée.' if decision=='approve' else 'Demande refusée.'})
 
 @app.errorhandler(404)
 def not_found(error):
