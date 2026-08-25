@@ -4560,7 +4560,7 @@ def android_api_root():
 
 @app.get('/api/v1/app-version')
 def android_app_version():
- latest=os.environ.get('MYTREE_ANDROID_LATEST_VERSION','0.1-alpha1-lot12-rc5')
+ latest=os.environ.get('MYTREE_ANDROID_LATEST_VERSION','0.1-alpha1-lot12-rc7')
  minimum=os.environ.get('MYTREE_ANDROID_MIN_VERSION','0.1-alpha1')
  maintenance=os.environ.get('MYTREE_MAINTENANCE','0').lower() in ('1','true','yes','on')
  message=os.environ.get('MYTREE_ANDROID_UPDATE_MESSAGE','')
@@ -4587,6 +4587,44 @@ def android_app_version():
 @app.get('/api/v1/status')
 def android_status():
  return jsonify({'ok':True,'version':APP_VERSION,'api':'v1'})
+
+@app.get('/api/v1/public/home')
+def android_public_home():
+ c=db()
+ tree_where="active=1 AND approval_status='approved'"
+ if 'visibility' in columns(c,'trees'): tree_where+=" AND COALESCE(visibility,'public')='public'"
+ trees=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where).fetchone()['n']
+ projects=c.execute("SELECT COUNT(*) n FROM projects WHERE active=1").fetchone()['n']
+ species=c.execute("SELECT COUNT(*) n FROM species WHERE active=1").fetchone()['n']
+ events=c.execute("SELECT COUNT(*) n FROM events WHERE active=1").fetchone()['n']
+ c.close()
+ return jsonify({'home':{'tracked_trees':trees,'active_projects':projects,'species_count':species,'upcoming_events':events}})
+
+@app.get('/api/v1/public/map')
+def android_public_map():
+ c=db()
+ w=["t.active=1","t.approval_status='approved'","t.latitude IS NOT NULL","t.longitude IS NOT NULL"]
+ if 'visibility' in columns(c,'trees'): w.append("COALESCE(t.visibility,'public')='public'")
+ rows=c.execute("""SELECT t.id,t.tree_code,t.species,t.species_id,t.latitude,t.longitude,t.association_id,
+ s.name_fr species_name,a.name association_name,a.map_symbol,u.name planter_name
+ FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
+ LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC").fetchall()
+ trees=[dict(id=x['id'],code=x['tree_code'] or '',species=x['species'] or '',species_name=x['species_name'] or x['species'] or 'Arbre',
+             lat=x['latitude'],lng=x['longitude'],symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
+             association_id=x['association_id'],association_name=x['association_name'],planter_name=x['planter_name']) for x in rows]
+ c.close(); return jsonify({'trees':trees,'zones':[],'events':[]})
+
+@app.get('/api/v1/public/species')
+def android_public_species():
+ c=db()
+ rows=c.execute("""SELECT s.id,s.name_fr,s.name_ar,s.name_en,s.scientific_name,s.category,s.water_need,
+ s.watering_frequency_days,s.description,
+ (SELECT COUNT(*) FROM trees t WHERE t.species_id=s.id AND t.active=1 AND t.approval_status='approved') tree_count
+ FROM species s WHERE s.active=1 ORDER BY s.name_fr COLLATE NOCASE""").fetchall()
+ out=[dict(id=x['id'],name_fr=x['name_fr'] or '',name_ar=x['name_ar'] or '',name_en=x['name_en'] or '',
+           scientific_name=x['scientific_name'] or '',category=x['category'] or '',water_need=x['water_need'] or '',
+           watering_frequency_days=x['watering_frequency_days'],description=x['description'] or '',tree_count=x['tree_count']) for x in rows]
+ c.close(); return jsonify({'species':out})
 
 @app.post('/api/v1/auth/login')
 def android_login():
@@ -4657,8 +4695,9 @@ def android_home():
 def android_map():
  c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid); mine=request.args.get('mine')=='1'
  w=["t.active=1","t.approval_status='approved'","t.latitude IS NOT NULL","t.longitude IS NOT NULL"]; args=[]
- if mine: w.append("t.planted_by_user_id=?"); args.append(uid)
- elif aid: w.append("t.association_id=?"); args.append(aid)
+ if mine:
+  if aid: w.append("t.association_id=?"); args.append(aid)
+  else: w.append("t.planted_by_user_id=?"); args.append(uid)
  rows=c.execute("""SELECT t.id,t.tree_code,t.species,t.species_id,t.latitude,t.longitude,t.association_id,
  s.name_fr species_name,a.name association_name,a.map_symbol,u.name planter_name
  FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
