@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY AUTOINCREMENT,g
 CREATE TABLE IF NOT EXISTS associations(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT UNIQUE NOT NULL,name TEXT NOT NULL,short_name TEXT,description TEXT,logo_url TEXT,wilaya_id INTEGER,commune_id INTEGER,address TEXT,latitude REAL,longitude REAL,phone TEXT,email TEXT,website TEXT,map_symbol TEXT DEFAULT '🌳',status TEXT DEFAULT 'active',created_by_user_id INTEGER,created_at TEXT NOT NULL,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS association_memberships(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,user_id INTEGER NOT NULL,member_kind TEXT DEFAULT 'volunteer',role_code TEXT DEFAULT 'volunteer',status TEXT DEFAULT 'pending',requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT,UNIQUE(association_id,user_id,member_kind));
 CREATE TABLE IF NOT EXISTS association_creation_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,requested_by_user_id INTEGER,name TEXT NOT NULL,description TEXT,wilaya_id INTEGER,commune_id INTEGER,address TEXT,phone TEXT,email TEXT,status TEXT DEFAULT 'pending',requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT);
+CREATE TABLE IF NOT EXISTS association_accounts(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER UNIQUE NOT NULL,login_id TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,active INTEGER DEFAULT 1,created_at TEXT NOT NULL,last_login TEXT);
 CREATE TABLE IF NOT EXISTS association_archive_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,requested_by_user_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',reason TEXT,requested_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,rejection_reason TEXT);
 CREATE TABLE IF NOT EXISTS association_collaborations(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id INTEGER NOT NULL,inviting_association_id INTEGER NOT NULL,invited_association_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',can_view INTEGER DEFAULT 1,can_intervene INTEGER DEFAULT 1,can_add_tree INTEGER DEFAULT 0,can_manage_missions INTEGER DEFAULT 0,created_by_user_id INTEGER,created_at TEXT NOT NULL,reviewed_by_user_id INTEGER,reviewed_at TEXT,ended_by_user_id INTEGER,ended_at TEXT,end_reason TEXT,UNIQUE(project_id,inviting_association_id,invited_association_id));
 CREATE TABLE IF NOT EXISTS association_collaboration_history(id INTEGER PRIMARY KEY AUTOINCREMENT,collaboration_id INTEGER NOT NULL,action TEXT NOT NULL,actor_user_id INTEGER,association_id INTEGER,details TEXT,created_at TEXT NOT NULL);
@@ -316,6 +317,16 @@ def init_db():
  # FIXED6 : migrations additives, compatibles avec les bases Railway existantes.
  if 'requested_map_symbol' not in columns(c,'association_creation_requests'):
   c.execute("ALTER TABLE association_creation_requests ADD COLUMN requested_map_symbol TEXT")
+ if 'requested_login_id' not in columns(c,'association_creation_requests'):
+  c.execute("ALTER TABLE association_creation_requests ADD COLUMN requested_login_id TEXT")
+ if 'requested_password_hash' not in columns(c,'association_creation_requests'):
+  c.execute("ALTER TABLE association_creation_requests ADD COLUMN requested_password_hash TEXT")
+ if 'organization_type' not in columns(c,'association_creation_requests'):
+  c.execute("ALTER TABLE association_creation_requests ADD COLUMN organization_type TEXT DEFAULT 'volunteer_group'")
+ if 'approval_number' not in columns(c,'association_creation_requests'):
+  c.execute("ALTER TABLE association_creation_requests ADD COLUMN approval_number TEXT")
+ if 'approval_document' not in columns(c,'association_creation_requests'):
+  c.execute("ALTER TABLE association_creation_requests ADD COLUMN approval_document TEXT")
  for col,typ in [('reviewed_by_role','TEXT'),('reviewed_by_association_id','INTEGER')]:
   if col not in columns(c,'trees'): c.execute(f"ALTER TABLE trees ADD COLUMN {col} {typ}")
  migrate_legacy(c)
@@ -1139,13 +1150,24 @@ def filter_options(c):
 
 @app.route('/login',methods=['GET','POST'])
 def login():
+ login_type=clean(request.values.get('account_type')) or 'personal'
+ if login_type not in ('personal','association'): login_type='personal'
  if request.method=='POST':
-  login_value=clean(request.form.get('login')); c=db(); u=c.execute('SELECT u.*,r.name role_name FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE (u.username=? OR u.phone=?) AND u.active=1',(login_value,login_value)).fetchone(); success=bool(u and check_password_hash(u['password_hash'],request.form.get('password','')))
-  c.execute('INSERT INTO login_history(user_id,login_value,success,ip_address,created_at) VALUES(?,?,?,?,?)',(u['id'] if u else None,login_value,1 if success else 0,request.headers.get('X-Forwarded-For',request.remote_addr),datetime.now().isoformat(timespec='seconds')))
-  if success:
-   saved_lang=u['preferred_language'] if 'preferred_language' in u.keys() and u['preferred_language'] in SUPPORTED_LANGS else current_lang(); session.clear(); session.permanent=request.form.get('remember')=='1'; session.update(uid=u['id'],name=u['name'] or user_display_name(u['first_name'],u['last_name']),role=u['role_name'] or u['role'] or 'volunteer',lang=saved_lang); c.execute('UPDATE users SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),u['id'])); c.commit(); c.close(); log_action('login','user',u['id'],'Connexion mémorisée' if session.permanent else 'Connexion standard'); target=request.form.get('next') or request.args.get('next'); return redirect(target if target and target.startswith('/') else ('/' if is_admin() else '/volunteer'))
-  c.commit(); c.close(); flash('Identifiants incorrects ou compte désactivé.')
- return page('Connexion','''<div class="card login-card"><div style="text-align:center;margin-bottom:18px"><div style="font-size:44px">🌳 <span style="font-size:28px" title="Algérie">🇩🇿</span></div><h2>Connexion MyTree</h2><p class="sub">Connectez-vous pour retrouver votre espace et poursuivre l’action demandée.</p></div><form method="post"><label>Téléphone ou utilisateur<input name="login" autocomplete="username" placeholder="Votre téléphone ou identifiant" required></label><label style="display:block;margin-top:14px">Mot de passe<input type="password" name="password" placeholder="Votre mot de passe" autocomplete="current-password" required></label><input type="hidden" name="next" value="{{request.args.get('next','')}}"><p><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="remember" value="1" style="width:auto"> Se souvenir de moi pendant 30 jours</label></p><div class="login-actions"><button class="btn">🔐 Se connecter</button><a class="btn alt" href="/public/register?next={{request.args.get('next','')}}&cancel={{request.args.get('cancel','/public')}}">👤 Créer un compte</a><a class="btn alt" href="/forgot-password">🔑 Mot de passe oublié ?</a><a class="btn alt" href="{{request.args.get('cancel') or '/public'}}">← Annuler / Retour</a></div></form></div>''')
+  login_value=clean(request.form.get('login')); password=request.form.get('password',''); c=db()
+  if login_type=='association':
+   acc=c.execute("SELECT aa.*,a.name association_name,a.status association_status FROM association_accounts aa JOIN associations a ON a.id=aa.association_id WHERE lower(aa.login_id)=lower(?) AND aa.active=1 AND a.status='active'",(login_value,)).fetchone()
+   success=bool(acc and check_password_hash(acc['password_hash'],password))
+   if success:
+    session.clear(); session.permanent=request.form.get('remember')=='1'; session.update(account_type='association',association_account_id=acc['id'],association_id=acc['association_id'],name=acc['association_name'],role='association_account',lang=current_lang())
+    c.execute('UPDATE association_accounts SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),acc['id'])); c.commit(); c.close(); return redirect('/association/dashboard')
+   c.close(); flash('ID Association ou mot de passe incorrect.')
+  else:
+   u=c.execute('SELECT u.*,r.name role_name FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.phone=? AND u.active=1',(login_value,)).fetchone(); success=bool(u and check_password_hash(u['password_hash'],password))
+   c.execute('INSERT INTO login_history(user_id,login_value,success,ip_address,created_at) VALUES(?,?,?,?,?)',(u['id'] if u else None,login_value,1 if success else 0,request.headers.get('X-Forwarded-For',request.remote_addr),datetime.now().isoformat(timespec='seconds')))
+   if success:
+    saved_lang=u['preferred_language'] if 'preferred_language' in u.keys() and u['preferred_language'] in SUPPORTED_LANGS else current_lang(); session.clear(); session.permanent=request.form.get('remember')=='1'; session.update(uid=u['id'],account_type='personal',name=u['name'] or user_display_name(u['first_name'],u['last_name']),role=u['role_name'] or u['role'] or 'volunteer',lang=saved_lang); c.execute('UPDATE users SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),u['id'])); c.commit(); c.close(); target=request.form.get('next') or request.args.get('next'); return redirect(target if target and target.startswith('/') else ('/' if is_admin() else '/volunteer'))
+   c.commit(); c.close(); flash('Numéro de téléphone ou mot de passe incorrect.')
+ return page('Connexion',r'''<div class="card login-card"><div style="text-align:center;margin-bottom:18px"><div style="font-size:44px">🌳 🇩🇿</div><h2>Connexion MyTree</h2><p class="sub">Choisissez votre type de compte.</p></div><div class="action-set" style="margin-bottom:16px"><a class="btn {{'alt' if login_type!='personal' else ''}}" href="/login?account_type=personal">👤 Personnel / Bénévole</a><a class="btn {{'alt' if login_type!='association' else ''}}" href="/login?account_type=association">🏛 Association</a></div><form method="post"><input type="hidden" name="account_type" value="{{login_type}}"><label>{{'ID Association' if login_type=='association' else 'Numéro de téléphone'}}<input name="login" autocomplete="username" required></label><label style="display:block;margin-top:14px">Mot de passe<input type="password" name="password" autocomplete="current-password" required></label><input type="hidden" name="next" value="{{request.args.get('next','')}}"><p><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="remember" value="1" style="width:auto"> Se souvenir de moi pendant 30 jours</label></p><div class="login-actions"><button class="btn">🔐 Se connecter</button>{% if login_type=='personal' %}<a class="btn alt" href="/public/register">👤 Créer un compte personnel</a><a class="btn alt" href="/forgot-password">🔑 Mot de passe oublié ?</a>{% endif %}<a class="btn alt" href="/public">← Retour</a></div></form></div>''',login_type=login_type)
 
 @app.route('/forgot-password',methods=['GET','POST'])
 def forgot_password():
@@ -3414,9 +3436,10 @@ def reject_tree_change(rid):
  c.close(); return redirect('/tree-change-requests')
 
 # --- v1.8.0 Alpha 4 : interface publique et encyclopédie ---
-def public_page(title, body, **ctx):
- # Lot 10 — aucun espace public ne reste affiché après authentification.
- if session.get('uid'):
+def public_page(title, body, allow_authenticated=False, **ctx):
+ # Les pages publiques normales disparaissent après authentification, mais une fiche arbre
+ # ouverte par QR doit rester consultable même si le navigateur possède déjà une session.
+ if session.get('uid') and not allow_authenticated:
   return redirect('/' if is_admin() else '/volunteer')
  if session.get('uid'):
   account_link='/'+('' if is_admin() else 'volunteer')
@@ -3475,7 +3498,7 @@ def public_projects():
 def public_tree(tid):
  c=db(); t=c.execute("SELECT t.*,s.name_fr,s.name_ar,s.scientific_name,p.name project_name,z.name zone_name FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id WHERE t.id=? AND t.active=1 AND t.approval_status='approved'",(tid,)).fetchone(); c.close()
  if not t:return ('Arbre introuvable',404)
- return public_page('Fiche arbre',"""<div class='card'><h1>🌳 {{t.name_fr}} — {{t.tree_code}}</h1><p dir='rtl'>{{t.name_ar or ''}}</p><p><i>{{t.scientific_name or ''}}</i></p><div class='grid two'><div><p><b>Date de plantation :</b> {{t.planted_at or '—'}}</p><p><b>Projet :</b> {{t.project_name or 'Hors projet'}}</p><p><b>Zone :</b> {{t.zone_name or 'Hors zone'}}</p></div><div><p><b>État :</b> {{t.health_status}}</p><p><b>Dernier arrosage :</b> {{t.last_watered_at or 'Non renseigné'}}</p></div></div><a class='btn' href='/public/action/water'>💧 Arroser ou planter</a> <a class='btn alt' href='/public/species/{{t.species_id}}'>Voir la fiche de l’espèce</a></div>""",t=t)
+ return public_page('Fiche arbre',"""<div class='card'><h1>🌳 {{t.name_fr}} — {{t.tree_code}}</h1><p dir='rtl'>{{t.name_ar or ''}}</p><p><i>{{t.scientific_name or ''}}</i></p><div class='grid two'><div><p><b>Date de plantation :</b> {{t.planted_at or '—'}}</p><p><b>Projet :</b> {{t.project_name or 'Hors projet'}}</p><p><b>Zone :</b> {{t.zone_name or 'Hors zone'}}</p></div><div><p><b>État :</b> {{t.health_status}}</p><p><b>Dernier arrosage :</b> {{t.last_watered_at or 'Non renseigné'}}</p></div></div><a class='btn' href='/public/action/water'>💧 Arroser ou planter</a> <a class='btn alt' href='/public/species/{{t.species_id}}'>Voir la fiche de l’espèce</a></div>""",t=t,allow_authenticated=True)
 
 @app.route('/public/register',methods=['GET','POST'])
 def public_register():
@@ -4161,14 +4184,18 @@ def membership_reject(mid):
 def association_request_new():
  if request.method=='POST':
   c=db(); name=clean(request.form.get('name')); now=datetime.now().isoformat(timespec='minutes')
-  symbol=clean(request.form.get('map_symbol'))
+  symbol=clean(request.form.get('map_symbol')); login_id=clean(request.form.get('association_login_id')); assoc_password=str(request.form.get('association_password') or ''); organization_type=clean(request.form.get('organization_type')) or 'volunteer_group'; approval_number=clean(request.form.get('approval_number')); approval_document=clean(request.form.get('approval_document'))
   if not name: c.close(); flash('Le nom est obligatoire.'); return redirect('/association-request/new')
+  if not login_id or len(login_id)<4: c.close(); flash('Choisissez un ID Association d’au moins 4 caractères.'); return redirect('/association-request/new')
+  if c.execute("SELECT 1 FROM association_accounts WHERE lower(login_id)=lower(?)",(login_id,)).fetchone() or c.execute("SELECT 1 FROM association_creation_requests WHERE status='pending' AND lower(COALESCE(requested_login_id,''))=lower(?)",(login_id,)).fetchone(): c.close(); flash('Cet ID Association est déjà utilisé.'); return redirect('/association-request/new')
+  if len(assoc_password)<6: c.close(); flash('Le mot de passe Association doit contenir au moins 6 caractères.'); return redirect('/association-request/new')
+  if organization_type=='approved_association' and (not approval_number or not approval_document): c.close(); flash('Pour une association agréée, le numéro et le justificatif d’agrément sont obligatoires.'); return redirect('/association-request/new')
   if symbol not in available_association_symbols(c): c.close(); flash('Ce symbole n’est plus disponible. Choisissez-en un autre.'); return redirect('/association-request/new')
-  cur=c.execute("INSERT INTO association_creation_requests(requested_by_user_id,name,description,wilaya_id,commune_id,address,phone,email,status,requested_at,requested_map_symbol) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?)",(session['uid'],name,clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),now,symbol)); rid=cur.lastrowid
+  cur=c.execute("INSERT INTO association_creation_requests(requested_by_user_id,name,description,wilaya_id,commune_id,address,phone,email,status,requested_at,requested_map_symbol,requested_login_id,requested_password_hash,organization_type,approval_number,approval_document) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?,?,?,?,?,?)",(session['uid'],name,clean(request.form.get('description')),request.form.get('wilaya_id') or None,request.form.get('commune_id') or None,clean(request.form.get('address')),clean(request.form.get('phone')),clean(request.form.get('email')),now,symbol,login_id,generate_password_hash(assoc_password),organization_type,approval_number,approval_document)); rid=cur.lastrowid
   for x in c.execute("SELECT id FROM users WHERE active=1 AND role='super_admin'").fetchall(): c.execute("INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)",(x['id'],'Nouvelle demande d’association',name+' demande son enregistrement dans MyTree.','/association-requests','Action requise','association_request',rid,now))
   c.commit(); c.close(); flash('Demande d’association envoyée au Super Admin.'); return redirect('/my-associations')
  c=db(); wilayas=c.execute('SELECT * FROM wilayas WHERE active=1 ORDER BY name').fetchall(); communes=c.execute('SELECT * FROM communes WHERE active=1 ORDER BY name').fetchall(); symbols=available_association_symbols(c); c.close()
- return page('Demander une association',"""<div class='card'><h2>🏛 Demander la création d’une association</h2><form method='post' class='form'><label>Nom<input name='name' required></label><div class='full'><b>Symbole de l’association sur la carte</b><div class='symbol-picker'>{% for symbol in symbols %}<label class='symbol-choice'><input type='radio' name='map_symbol' value='{{symbol}}' required><span>{{symbol}}</span></label>{% else %}<p class='sub'>Aucun symbole disponible.</p>{% endfor %}</div><p class='sub'>Un symbole réservé disparaît automatiquement de la liste des autres associations.</p></div><label>Wilaya<select name='wilaya_id'><option value=''>Choisir</option>{% for w in wilayas %}<option value='{{w.id}}'>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Choisir</option>{% for c in communes %}<option value='{{c.id}}'>{{c.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone'></label><label>E-mail<input name='email' type='email'></label><label class='full'>Adresse<input name='address'></label><label class='full'>Présentation<textarea name='description'></textarea></label><div class='full'><button class='btn'>Envoyer la demande</button> <a class='btn alt' href='/my-associations'>Annuler</a></div></form></div>""",wilayas=wilayas,communes=communes,symbols=symbols)
+ return page('Demander une association',"""<div class='card'><h2>🏛 Demander la création d’une association</h2><form method='post' class='form'><label>Nom<input name='name' required></label><label>ID Association souhaité<input name='association_login_id' minlength='4' required placeholder='ex: AMIS-NATURE-ORAN'></label><label>Mot de passe Association<input type='password' name='association_password' minlength='6' required></label><label>Type<select name='organization_type' required><option value='volunteer_group'>Groupe de bénévoles</option><option value='approved_association'>Association agréée</option></select></label><label>N° d’agrément<input name='approval_number'></label><label class='full'>Justificatif d’agrément / document (référence ou lien)<input name='approval_document' placeholder='Référence du document ou lien sécurisé'></label><div class='full'><b>Symbole de l’association sur la carte</b><div class='symbol-picker'>{% for symbol in symbols %}<label class='symbol-choice'><input type='radio' name='map_symbol' value='{{symbol}}' required><span>{{symbol}}</span></label>{% else %}<p class='sub'>Aucun symbole disponible.</p>{% endfor %}</div><p class='sub'>Un symbole réservé disparaît automatiquement de la liste des autres associations.</p></div><label>Wilaya<select name='wilaya_id'><option value=''>Choisir</option>{% for w in wilayas %}<option value='{{w.id}}'>{{w.name}}</option>{% endfor %}</select></label><label>Commune<select name='commune_id'><option value=''>Choisir</option>{% for c in communes %}<option value='{{c.id}}'>{{c.name}}</option>{% endfor %}</select></label><label>Téléphone<input name='phone'></label><label>E-mail<input name='email' type='email'></label><label class='full'>Adresse<input name='address'></label><label class='full'>Présentation<textarea name='description'></textarea></label><div class='full'><button class='btn'>Envoyer la demande</button> <a class='btn alt' href='/my-associations'>Annuler</a></div></form></div>""",wilayas=wilayas,communes=communes,symbols=symbols)
 
 @app.route('/association-requests')
 @login_required
@@ -4186,12 +4213,14 @@ def association_request_approve(rid):
   r=c.execute("SELECT * FROM association_creation_requests WHERE id=? AND status='pending'",(rid,)).fetchone()
   if not r:
    c.close(); flash('Cette demande a déjà été traitée ou n’existe plus.'); return redirect('/association-requests')
-  now=datetime.now().isoformat(timespec='minutes'); code=association_code(c); symbol=r['requested_map_symbol'] if 'requested_map_symbol' in r.keys() else None
+  now=datetime.now().isoformat(timespec='minutes'); code=(r['requested_login_id'] if 'requested_login_id' in r.keys() and r['requested_login_id'] else association_code(c)); symbol=r['requested_map_symbol'] if 'requested_map_symbol' in r.keys() else None
   if not symbol or symbol not in available_association_symbols(c,include_pending=False):
    c.close(); flash('Le symbole demandé n’est plus disponible. Modifiez la demande avant validation.'); return redirect('/association-requests')
   cur=c.execute("INSERT INTO associations(code,name,description,wilaya_id,commune_id,address,phone,email,map_symbol,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?, 'active',?,?)",
                 (code,r['name'],r['description'],r['wilaya_id'],r['commune_id'],r['address'],r['phone'],r['email'],symbol,session['uid'],now))
   aid=cur.lastrowid
+  if 'requested_login_id' in r.keys() and r['requested_login_id'] and r['requested_password_hash']:
+   c.execute("INSERT INTO association_accounts(association_id,login_id,password_hash,active,created_at) VALUES(?,?,?,?,?)",(aid,r['requested_login_id'],r['requested_password_hash'],1,now))
   c.execute("UPDATE association_creation_requests SET status='approved',reviewed_by_user_id=?,reviewed_at=?,rejection_reason=NULL WHERE id=?",
             (session['uid'],now,rid))
   c.execute("INSERT OR REPLACE INTO association_memberships(association_id,user_id,member_kind,role_code,status,requested_at,reviewed_by_user_id,reviewed_at) VALUES(?,?,'volunteer','association_admin','approved',?,?,?)",
@@ -4553,6 +4582,22 @@ def android_context_payload(c,uid,aid=None):
  return {'type':'personal','association_id':None,'association_name':'Personnel','role_code':role,'permissions':[]}
 
 
+@app.get('/.well-known/assetlinks.json')
+def android_assetlinks():
+ # SHA-256 du certificat de signature de l'APK, configurable sur Railway.
+ # Exemple de valeur : AA:BB:CC:... (sans valeur, la route reste valide mais ne vérifie aucune signature).
+ fingerprint=(os.environ.get('MYTREE_ANDROID_SHA256_CERT') or '').strip()
+ if not fingerprint:
+  return jsonify([])
+ return jsonify([{
+  'relation':['delegate_permission/common.handle_all_urls'],
+  'target':{
+   'namespace':'android_app',
+   'package_name':'dz.mytree.professional',
+   'sha256_cert_fingerprints':[fingerprint]
+  }
+ }])
+
 @app.get('/api/v1')
 def android_api_root():
  return jsonify({'ok':True,'api':'v1','service':'MyTree Professional Android API','version':APP_VERSION})
@@ -4587,6 +4632,49 @@ def android_app_version():
 @app.get('/api/v1/status')
 def android_status():
  return jsonify({'ok':True,'version':APP_VERSION,'api':'v1'})
+
+@app.get('/api/v1/public/projects')
+def api_v1_public_projects():
+ c=db(); rows=c.execute("SELECT p.*,(SELECT COUNT(*) FROM trees t WHERE t.project_id=p.id AND t.active=1 AND t.approval_status='approved') tree_count FROM projects p WHERE p.active=1 ORDER BY p.id DESC").fetchall(); c.close()
+ return jsonify(projects=[dict(id=x['id'],name=x['name'],location=x['location'] or '',status=x['status'] or '',target_trees=x['target_trees'] or 0,tree_count=x['tree_count'] or 0,start_date=x['start_date'] or '',end_date=x['end_date'] or '') for x in rows])
+
+@app.get('/api/v1/public/events')
+def api_v1_public_events():
+ c=db()
+ rows=c.execute("""SELECT e.id,e.title,e.event_type,e.status,e.start_at,e.end_at,e.description,
+ p.name project_name,z.name zone_name,
+ COALESCE(e.location,'') location
+ FROM events e LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN zones z ON z.id=e.zone_id
+ WHERE e.active=1 ORDER BY COALESCE(e.start_at,e.created_at) DESC""").fetchall()
+ c.close()
+ return jsonify(events=[dict(id=x['id'],title=x['title'] or '',event_type=x['event_type'] or '',status=x['status'] or '',
+  start_at=x['start_at'] or '',end_at=x['end_at'] or '',description=x['description'] or '',location=x['location'] or '',
+  project_name=x['project_name'] or '',zone_name=x['zone_name'] or '') for x in rows])
+
+@app.get('/api/v1/public/trees/<int:tid>')
+def api_v1_public_tree(tid):
+ c=db(); t=c.execute("SELECT t.*,s.name_fr,s.name_ar,s.scientific_name,p.name project_name,z.name zone_name FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id WHERE t.id=? AND t.active=1 AND t.approval_status='approved'",(tid,)).fetchone(); c.close()
+ if not t:return api_error('not_found','Arbre introuvable.',404)
+ return jsonify(tree=dict(id=t['id'],code=t['tree_code'] or '',name_fr=t['name_fr'] or '',name_ar=t['name_ar'] or '',scientific_name=t['scientific_name'] or '',planted_at=t['planted_at'] or '',project_name=t['project_name'] or '',zone_name=t['zone_name'] or '',health_status=t['health_status'] or '',last_watered_at=t['last_watered_at'] or '',latitude=t['latitude'],longitude=t['longitude']))
+
+@app.post('/api/v1/public/register')
+def api_v1_public_register():
+ data=request.get_json(silent=True) or {}; first=(data.get('first_name') or '').strip(); last=(data.get('last_name') or '').strip(); phone=(data.get('phone') or '').strip(); email=(data.get('email') or '').strip(); sex=(data.get('sex') or 'Homme').strip(); password=data.get('password') or ''; confirm=data.get('password_confirm') or ''; address=(data.get('address') or '').strip(); wid=data.get('wilaya_id') or None; cid=data.get('commune_id') or None
+ errors=[]
+ if not first: errors.append('Le prénom est obligatoire.')
+ if not last: errors.append('Le nom est obligatoire.')
+ if not phone: errors.append('Le téléphone est obligatoire.')
+ if len(password)<6: errors.append('Le mot de passe doit contenir au moins 6 caractères.')
+ if password!=confirm: errors.append('Les mots de passe ne correspondent pas.')
+ if errors:return api_error('validation',' '.join(errors),400)
+ c=db(); exists=c.execute('SELECT id FROM users WHERE phone=? OR (email<>\'\' AND email=?) OR username=?',(phone,email,phone)).fetchone()
+ if exists: c.close(); return api_error('duplicate','Ce téléphone ou cet e-mail est déjà utilisé.',409)
+ role=c.execute("SELECT id FROM roles WHERE name='volunteer'").fetchone(); now=datetime.now().isoformat(timespec='minutes'); name=user_display_name(first,last)
+ try:
+  cur=c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,address,created_at,preferred_language) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(first,last,name,sex,phone,email,phone,generate_password_hash(password),role['id'] if role else None,'volunteer',1,wid,cid,address,now,(data.get('preferred_language') or 'fr'))); c.commit(); uid=cur.lastrowid
+ finally: c.close()
+ log_action('self_register','user',uid,'Inscription Android native')
+ return jsonify(ok=True,user_id=uid,message='Compte bénévole créé. Vous pouvez vous connecter immédiatement.'),201
 
 @app.get('/api/v1/public/home')
 def android_public_home():
@@ -4626,18 +4714,47 @@ def android_public_species():
            watering_frequency_days=x['watering_frequency_days'],description=x['description'] or '',tree_count=x['tree_count']) for x in rows]
  c.close(); return jsonify({'species':out})
 
+
+@app.get('/api/v1/public/geography')
+def android_public_geography():
+ c=db()
+ wilayas=[dict(id=x['id'],code=x['code'] or '',name=x['name'] or '',name_ar=x['name_ar'] or '') for x in c.execute("SELECT id,code,name,name_ar FROM wilayas WHERE active=1 ORDER BY code").fetchall()]
+ communes=[dict(id=x['id'],wilaya_id=x['wilaya_id'],name=x['name'] or '',name_ar=x['name_ar'] or '') for x in c.execute("SELECT id,wilaya_id,name,name_ar FROM communes WHERE active=1 ORDER BY name").fetchall()]
+ species=[dict(id=x['id'],name=x['name_fr'] or '',name_fr=x['name_fr'] or '',name_ar=x['name_ar'] or '',name_en=x['name_en'] or '',scientific_name=x['scientific_name'] or '') for x in c.execute("SELECT id,name_fr,name_ar,name_en,scientific_name FROM species WHERE active=1 ORDER BY name_fr COLLATE NOCASE").fetchall()]
+ c.close(); return jsonify({'wilayas':wilayas,'communes':communes,'species':species,'projects':[],'zones':[]})
+
+@app.route('/association/dashboard')
+def association_account_dashboard():
+ aid=session.get('association_id') if session.get('account_type')=='association' else None
+ if not aid: return redirect('/login?account_type=association')
+ c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); session.clear(); return redirect('/login?account_type=association')
+ counts={'members':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n'],'pending':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='pending'",(aid,)).fetchone()['n'],'projects':c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n'],'trees':c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']}; c.close()
+ return page('Association',"""<div class='section-title'><div><h2>🏛 {{a.name}}</h2><p class='sub'>Espace Association · {{a.code}}</p></div></div><div class='grid kpis'><a class='card kpi' href='/membership-requests'><small>Membres</small><b>{{counts.members}}</b><span>{{counts.pending}} demande(s)</span></a><a class='card kpi' href='/projects'><small>Projets</small><b>{{counts.projects}}</b></a><a class='card kpi' href='/trees'><small>Arbres</small><b>{{counts.trees}}</b></a></div><div class='card'><h3>Gestion de l’association</h3><div class='action-set'><a class='btn' href='/membership-requests'>Adhérents & rôles</a><a class='btn' href='/donations'>Dons</a><a class='btn' href='/projects'>Projets</a><a class='btn' href='/zones'>Zones</a><a class='btn' href='/nursery'>Stock / Pépinière</a><a class='btn' href='/equipment'>Inventaire matériel</a><a class='btn' href='/reports'>Finances & rapports</a><a class='btn alt' href='/public/associations/{{a.id}}'>Fiche publique</a></div></div>""",a=a,counts=counts)
+
+@app.post('/api/v1/auth/association-login')
+def android_association_login():
+ body=request.get_json(silent=True) or {}; login_id=clean(body.get('login')); password=str(body.get('password') or ''); c=db()
+ acc=c.execute("SELECT aa.*,a.name association_name FROM association_accounts aa JOIN associations a ON a.id=aa.association_id WHERE lower(aa.login_id)=lower(?) AND aa.active=1 AND a.status='active'",(login_id,)).fetchone()
+ if not acc or not check_password_hash(acc['password_hash'],password): c.close(); return jsonify({'error':{'message':'ID Association ou mot de passe incorrect.'}}),401
+ # association account receives a scoped token through its creator/admin user for API compatibility
+ u=c.execute("SELECT u.* FROM users u JOIN association_memberships m ON m.user_id=u.id WHERE m.association_id=? AND m.status='approved' AND m.role_code IN ('association_admin','admin') ORDER BY m.id LIMIT 1",(acc['association_id'],)).fetchone()
+ if not u: c.close(); return jsonify({'error':{'message':'Compte Association sans administrateur actif.'}}),403
+ token=android_issue_token(u['id']); c.execute('UPDATE association_accounts SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),acc['id'])); c.commit()
+ payload={'token':token,'account_type':'association','association':{'id':acc['association_id'],'name':acc['association_name'],'login_id':acc['login_id']},'user':dict(id=u['id'],name=acc['association_name'],first_name='',last_name='',phone='',email='',photo_url='',preferred_language=u['preferred_language'] or 'fr'),'associations':android_assoc_payload(c,u['id'])}; c.close(); return jsonify(payload)
+
 @app.post('/api/v1/auth/login')
 def android_login():
  body=request.get_json(silent=True) or {}
  login=clean(body.get('login')); password=str(body.get('password') or '')
  c=db()
  u=c.execute("""SELECT * FROM users WHERE active=1 AND
- (lower(COALESCE(username,''))=lower(?) OR lower(COALESCE(email,''))=lower(?) OR phone=?) LIMIT 1""",(login,login,login)).fetchone()
+ phone=? LIMIT 1""",(login,)).fetchone()
  if not u or not check_password_hash(u['password_hash'],password):
-  c.close(); return jsonify({'error':{'message':'Identifiant ou mot de passe incorrect'}}),401
+  c.close(); return jsonify({'error':{'message':'Numéro de téléphone ou mot de passe incorrect.'}}),401
  payload={'token':android_issue_token(u['id']),
           'user':dict(id=u['id'],name=u['name'] or '',first_name=u['first_name'] or '',last_name=u['last_name'] or '',
-                      phone=u['phone'] or '',email=u['email'] or '',preferred_language=u['preferred_language'] or 'fr'),
+                      phone=u['phone'] or '',email=u['email'] or '',photo_url=u['photo_url'] or '',preferred_language=u['preferred_language'] or 'fr'),
           'associations':android_assoc_payload(c,u['id'])}
  c.close(); return jsonify(payload)
 
@@ -4646,8 +4763,27 @@ def android_login():
 def android_me():
  c=db(); u=c.execute("SELECT * FROM users WHERE id=?",(request.android_uid,)).fetchone()
  out={'user':dict(id=u['id'],name=u['name'] or '',first_name=u['first_name'] or '',last_name=u['last_name'] or '',
-                  phone=u['phone'] or '',email=u['email'] or '',preferred_language=u['preferred_language'] or 'fr')}
+                  phone=u['phone'] or '',email=u['email'] or '',photo_url=u['photo_url'] or '',preferred_language=u['preferred_language'] or 'fr')}
  c.close(); return jsonify(out)
+
+
+@app.put('/api/v1/auth/me')
+@android_auth
+def android_update_me():
+ body=request.get_json(silent=True) or {}
+ first=clean(body.get('first_name')); last=clean(body.get('last_name')); phone=clean(body.get('phone')); email=clean(body.get('email')).lower(); lang=clean(body.get('preferred_language')) or 'fr'
+ if lang not in ('fr','ar','en'): lang='fr'
+ name=(first+' '+last).strip()
+ c=db()
+ if email:
+  duplicate=c.execute("SELECT id FROM users WHERE lower(COALESCE(email,''))=lower(?) AND id<>?",(email,request.android_uid)).fetchone()
+  if duplicate: c.close(); return jsonify({'error':{'message':'Cette adresse e-mail est déjà utilisée.'}}),409
+ if phone:
+  duplicate=c.execute("SELECT id FROM users WHERE phone=? AND id<>?",(phone,request.android_uid)).fetchone()
+  if duplicate: c.close(); return jsonify({'error':{'message':'Ce numéro de téléphone est déjà utilisé.'}}),409
+ c.execute("UPDATE users SET first_name=?,last_name=?,name=?,phone=?,email=?,preferred_language=? WHERE id=?",(first,last,name or first or last,phone,email,lang,request.android_uid)); c.commit()
+ u=c.execute("SELECT * FROM users WHERE id=?",(request.android_uid,)).fetchone(); c.close()
+ return jsonify({'ok':True,'message':'Profil mis à jour.','user':dict(id=u['id'],name=u['name'] or '',first_name=u['first_name'] or '',last_name=u['last_name'] or '',phone=u['phone'] or '',email=u['email'] or '',photo_url=u['photo_url'] or '',preferred_language=u['preferred_language'] or 'fr')})
 
 @app.post('/api/v1/auth/logout')
 @android_auth
@@ -4678,17 +4814,29 @@ def android_context():
 @app.get('/api/v1/home')
 @android_auth
 def android_home():
- c=db(); aid=android_assoc_id(c,request.android_uid)
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
  if aid:
-  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
+  tree_where="active=1 AND association_id=?"; tree_args=(aid,)
+  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where,tree_args).fetchone()['n']
   proj_n=c.execute("SELECT COUNT(*) n FROM projects WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
   zone_n=c.execute("SELECT COUNT(*) n FROM zones WHERE active=1 AND association_id=?",(aid,)).fetchone()['n'] if 'association_id' in columns(c,'zones') else 0
   miss_n=c.execute("SELECT COUNT(*) n FROM missions WHERE active=1 AND association_id=?",(aid,)).fetchone()['n'] if 'association_id' in columns(c,'missions') else 0
+  volunteers=c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n']
  else:
-  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND planted_by_user_id=?",(request.android_uid,)).fetchone()['n']
-  proj_n=zone_n=miss_n=0
- unread=c.execute("SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0",(request.android_uid,)).fetchone()['n']
- c.close(); return jsonify({'home':{'unread_notifications':unread,'counts':{'trees':tree_n,'projects':proj_n,'zones':zone_n,'missions':miss_n}}})
+  tree_where="active=1 AND planted_by_user_id=?"; tree_args=(uid,)
+  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where,tree_args).fetchone()['n']
+  proj_n=zone_n=miss_n=0; volunteers=0
+ to_water=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where+" AND COALESCE(watering_status,'')<>'À jour'",tree_args).fetchone()['n']
+ to_watch=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where+" AND COALESCE(health_status,'Bon')<>'Bon'",tree_args).fetchone()['n']
+ healthy=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where+" AND COALESCE(health_status,'Bon')='Bon'",tree_args).fetchone()['n']
+ species_n=c.execute("SELECT COUNT(DISTINCT COALESCE(species_id,species)) n FROM trees WHERE "+tree_where,tree_args).fetchone()['n']
+ if aid:
+  intervention_n=c.execute("SELECT COUNT(*) n FROM interventions i JOIN trees t ON t.id=i.tree_id WHERE t.active=1 AND t.association_id=? AND i.status='Planifiée'",(aid,)).fetchone()['n']
+ else:
+  intervention_n=c.execute("SELECT COUNT(*) n FROM interventions i JOIN trees t ON t.id=i.tree_id WHERE t.active=1 AND t.planted_by_user_id=? AND i.status='Planifiée'",(uid,)).fetchone()['n']
+ unread=c.execute("SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0",(uid,)).fetchone()['n']
+ counts={'trees':tree_n,'projects':proj_n,'zones':zone_n,'missions':miss_n,'to_water':to_water,'to_watch':to_watch,'interventions_pending':intervention_n,'healthy_trees':healthy,'active_volunteers':volunteers,'species':species_n}
+ c.close(); return jsonify({'home':{'unread_notifications':unread,'counts':counts}})
 
 @app.get('/api/v1/map')
 @android_auth
@@ -4763,6 +4911,12 @@ def android_scan():
 def android_create_planting():
  body=request.get_json(silent=True) or {}; c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
  species_id=body.get('species_id'); species=clean(body.get('species')); now=datetime.now().isoformat(timespec='minutes')
+ wilaya_id=body.get('wilaya_id'); commune_id=body.get('commune_id'); planted_at=clean(body.get('planted_at')) or date.today().isoformat()
+ if commune_id:
+  cm=c.execute('SELECT id,wilaya_id FROM communes WHERE id=? AND active=1',(commune_id,)).fetchone()
+  if not cm: c.close(); return jsonify({'error':{'message':'Commune invalide'}}),400
+  if wilaya_id and int(cm['wilaya_id'])!=int(wilaya_id): c.close(); return jsonify({'error':{'message':'La commune ne correspond pas à la wilaya sélectionnée'}}),400
+  wilaya_id=wilaya_id or cm['wilaya_id']
  if not species_id and not species:
   c.close(); return jsonify({'error':{'message':'Espèce obligatoire'}}),400
  if species_id:
@@ -4784,11 +4938,11 @@ def android_create_planting():
   if pr['target_trees']:
    n=c.execute("SELECT COUNT(*) n FROM trees WHERE project_id=? AND active=1 AND approval_status IN ('pending','approved')",(project_id,)).fetchone()['n']
    if n>=int(pr['target_trees']): c.close(); return jsonify({'error':{'message':'Objectif maximal du projet atteint'}}),409
- cur=c.execute("""INSERT INTO trees(species_id,species,project_id,zone_id,planted_at,planted_by_user_id,planted_by,
- latitude,longitude,health_status,watering_status,approval_status,association_id,notes,active,created_at)
- VALUES(?,?,?,?,?,?,?,?,?,'Bon','À jour','pending',?,?,1,?)""",
- (species_id,species,body.get('project_id'),body.get('zone_id'),date.today().isoformat(),uid,
-  c.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()['name'],body.get('latitude'),body.get('longitude'),aid,clean(body.get('notes')),now))
+ cur=c.execute("""INSERT INTO trees(species_id,species,project_id,zone_id,wilaya_id,commune_id,planted_at,planted_by_user_id,planted_by,
+ latitude,longitude,gps_accuracy,health_status,watering_status,approval_status,association_id,notes,active,created_at)
+ VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'Bon','À jour','pending',?,?,1,?)""",
+ (species_id,species,body.get('project_id'),body.get('zone_id'),wilaya_id,commune_id,planted_at,uid,
+  c.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()['name'],body.get('latitude'),body.get('longitude'),body.get('gps_accuracy'),aid,clean(body.get('notes')),now))
  tid=cur.lastrowid
  # Une plantation associative est visible dans la même file pending par les admins de l'association et le Super Admin.
  if aid:
@@ -4800,24 +4954,74 @@ def android_create_planting():
   if target==uid: continue
   c.execute("INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)",
             (target,'Plantation à valider','Une nouvelle plantation Android attend une validation.','/plantings/pending','Action requise','planting_review',tid,now))
+ raw_photo=str(body.get('photo_base64') or '')
+ if raw_photo:
+  try:
+   photo_data=base64.b64decode(raw_photo,validate=True)
+   if len(photo_data)<=8*1024*1024:
+    folder=os.path.join(DATA_DIR,'uploads','android'); os.makedirs(folder,exist_ok=True)
+    name='tree-'+str(tid)+'-'+secrets.token_hex(8)+'.jpg'; path=os.path.join(folder,name)
+    with open(path,'wb') as f: f.write(photo_data)
+    c.execute("INSERT INTO tree_photos(tree_id,photo_url,caption,created_by_user_id,created_at) VALUES(?,?,?,?,?)",(tid,'uploads/android/'+name,clean(body.get('photo_caption')),uid,now))
+  except Exception:
+   pass
  c.commit(); c.close()
  return jsonify({'ok':True,'tree_id':tid,'status':'pending','message':'Plantation envoyée pour validation.'}),201
 
+
+@app.get('/api/v1/donations/options')
+@android_auth
+def api_v1_donation_options():
+ uid=request.android_uid; c=db(); aid=android_assoc_id(c,uid)
+ species=c.execute("SELECT id,name_fr,name_ar FROM species WHERE active=1 ORDER BY name_fr").fetchall()
+ projects=[]
+ if aid:
+  projects=c.execute("SELECT id,name FROM projects WHERE active=1 AND association_id=? ORDER BY name",(aid,)).fetchall()
+ c.close()
+ return jsonify(ok=True,association_id=aid,species=[dict(id=x['id'],name_fr=x['name_fr'] or '',name_ar=x['name_ar'] or '') for x in species],projects=[dict(id=x['id'],name=x['name']) for x in projects])
+
+@app.post('/api/v1/donations')
+@android_auth
+def api_v1_create_donation():
+ uid=request.android_uid; data=request.get_json(silent=True) or {}; c=db(); aid=android_assoc_id(c,uid)
+ amount=max(0,float(data.get('amount') or 0)); unknown_qty=max(0,int(data.get('unknown_tree_quantity') or 0)); lines=data.get('trees') or []
+ valid=[]
+ for line in lines:
+  try: sid=int(line.get('species_id') or 0); qty=max(0,int(line.get('quantity') or 0))
+  except (TypeError,ValueError): sid=0; qty=0
+  if sid and qty:
+   ok=c.execute("SELECT id FROM species WHERE id=? AND active=1",(sid,)).fetchone()
+   if ok: valid.append((sid,qty))
+ if amount<=0 and unknown_qty<=0 and not valid:
+  c.close(); return api_error('validation','Ajoutez un montant ou au moins un arbre.',400)
+ receipt='PENDING-'+datetime.now().strftime('%Y%m%d-%H%M%S'); now=datetime.now().isoformat(timespec='minutes')
+ c.execute('INSERT INTO donation_groups(status,receipt_number,received_at,created_by_user_id,created_at) VALUES(?,?,?,?,?)',('En attente',receipt,date.today().isoformat(),uid,now)); gid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']
+ if amount>0: _add_donation_line(c,gid,None,'En attente',receipt,'Argent',amount=amount)
+ for sid,qty in valid: _add_donation_line(c,gid,None,'En attente',receipt,'Arbres',qty=qty,species_id=sid)
+ if unknown_qty>0:
+  c.execute('INSERT INTO donations(group_id,donor_id,donation_type,status,amount,currency,quantity,unit,description,received_at,estimated_value,species_id,equipment_id,receipt_number,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(gid,None,'Arbres','En attente',0,'DZD',unknown_qty,'arbre(s)','Espèce non précisée',date.today().isoformat(),0,None,None,receipt,uid,now))
+ donor=c.execute('SELECT name FROM users WHERE id=?',(uid,)).fetchone(); donor_name=(donor['name'] if donor else 'Un bénévole')
+ notify_admins_in_tx(c,'Nouveau don à valider',donor_name+' a déclaré un don ('+receipt+').','/donations?status=pending','Don','donation_group',gid)
+ c.commit(); c.close(); log_action('create','donation_group',gid,'Don Android natif '+receipt)
+ return jsonify(ok=True,group_id=gid,receipt=receipt,status='En attente',message='Don envoyé pour validation.'),201
 
 @app.get('/api/v1/field-options')
 @android_auth
 def android_field_options():
  c=db(); aid=android_assoc_id(c,request.android_uid)
- species=[{'id':x['id'],'name':x['name_fr']} for x in c.execute("SELECT id,name_fr FROM species WHERE active=1 ORDER BY name_fr").fetchall()]
+ wilayas=[dict(id=x['id'],code=x['code'] or '',name=x['name'] or '',name_ar=x['name_ar'] or '') for x in c.execute("SELECT id,code,name,name_ar FROM wilayas WHERE active=1 ORDER BY code").fetchall()]
+ communes=[dict(id=x['id'],wilaya_id=x['wilaya_id'],name=x['name'] or '',name_ar=x['name_ar'] or '') for x in c.execute("SELECT id,wilaya_id,name,name_ar FROM communes WHERE active=1 ORDER BY name").fetchall()]
+ species=[dict(id=x['id'],name=x['name_fr'] or '',name_ar=x['name_ar'] or '',name_en=x['name_en'] or '',scientific_name=x['scientific_name'] or '') for x in c.execute("SELECT id,name_fr,name_ar,name_en,scientific_name FROM species WHERE active=1 ORDER BY name_fr").fetchall()]
  if aid:
-  projects=[{'id':x['id'],'name':x['name']} for x in c.execute("SELECT id,name FROM projects WHERE active=1 AND association_id=? ORDER BY name",(aid,)).fetchall()]
+  rows=c.execute("SELECT id,name,wilaya_id,commune_id FROM projects WHERE active=1 AND association_id=? ORDER BY name",(aid,)).fetchall()
  else:
-  projects=[{'id':x['id'],'name':x['name']} for x in c.execute("SELECT id,name FROM projects WHERE active=1 AND (association_id IS NULL OR association_id=0) ORDER BY name").fetchall()]
+  rows=c.execute("SELECT id,name,wilaya_id,commune_id FROM projects WHERE active=1 AND (association_id IS NULL OR association_id=0) ORDER BY name").fetchall()
+ projects=[dict(id=x['id'],name=x['name'],wilaya_id=x['wilaya_id'],commune_id=x['commune_id']) for x in rows]
  pids=[x['id'] for x in projects]; zones=[]
  if pids:
   marks=','.join('?'*len(pids))
-  zones=[{'id':x['id'],'project_id':x['project_id'],'name':x['name']} for x in c.execute(f"SELECT id,project_id,name FROM zones WHERE active=1 AND project_id IN ({marks}) ORDER BY name",pids).fetchall()]
- c.close(); return jsonify({'species':species,'projects':projects,'zones':zones})
+  zones=[dict(id=x['id'],project_id=x['project_id'],name=x['name'],wilaya_id=x['wilaya_id'],commune_id=x['commune_id']) for x in c.execute(f"SELECT id,project_id,name,wilaya_id,commune_id FROM zones WHERE active=1 AND project_id IN ({marks}) ORDER BY name",pids).fetchall()]
+ c.close(); return jsonify({'wilayas':wilayas,'communes':communes,'species':species,'projects':projects,'zones':zones})
 
 @app.get('/api/v1/trees/<int:tid>/history')
 @android_auth
