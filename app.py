@@ -4680,6 +4680,10 @@ def api_v1_public_register():
  log_action('self_register','user',uid,'Inscription Android native')
  return jsonify(ok=True,user_id=uid,message='Compte bénévole créé. Vous pouvez vous connecter immédiatement.'),201
 
+@app.get('/api/v1/version')
+def api_v1_version():
+ return jsonify({'ok':True,'version':'RC16.6-Backend-Association-API','association_public_detail':True,'association_join':True})
+
 @app.get('/api/v1/public/home')
 def android_public_home():
  c=db()
@@ -4696,6 +4700,39 @@ def android_public_home():
 def android_public_associations():
  c=db(); rows=c.execute("SELECT a.id,a.code,a.name,a.short_name,a.description,a.map_symbol,w.name wilaya_name,cm.name commune_name FROM associations a LEFT JOIN wilayas w ON w.id=a.wilaya_id LEFT JOIN communes cm ON cm.id=a.commune_id WHERE a.status='active' ORDER BY a.name").fetchall(); c.close()
  return jsonify({'associations':[dict(x) for x in rows]})
+
+@app.get('/api/v1/public/associations/<int:aid>')
+def android_public_association_detail(aid):
+ c=db()
+ a=c.execute("""SELECT a.id,a.code,a.name,a.short_name,a.description,a.map_symbol,a.status,a.address,a.phone,a.email,a.website,w.name wilaya_name,cm.name commune_name
+ FROM associations a LEFT JOIN wilayas w ON w.id=a.wilaya_id LEFT JOIN communes cm ON cm.id=a.commune_id
+ WHERE a.id=? AND a.status='active'""",(aid,)).fetchone()
+ if not a: c.close(); return jsonify({'error':{'message':'Association introuvable.'}}),404
+ d=dict(a)
+ d['members']=c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n']
+ d['trees']=c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
+ d['projects']=c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n']
+ d['membership_status']='none'
+ token=request.headers.get('Authorization','')
+ if token.startswith('Bearer '):
+  uid=android_uid()
+  if uid:
+   m=c.execute("SELECT status FROM association_memberships WHERE association_id=? AND user_id=? ORDER BY id DESC LIMIT 1",(aid,uid)).fetchone()
+   if m: d['membership_status']=m['status']
+ c.close(); return jsonify({'association':d})
+
+@app.post('/api/v1/associations/<int:aid>/join')
+@android_auth
+def android_join_association(aid):
+ body=request.get_json(silent=True) or {}; member_kind=body.get('member_kind') if body.get('member_kind') in ('volunteer','member') else 'member'
+ c=db(); a=c.execute("SELECT id,name FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
+ if not a: c.close(); return jsonify({'error':{'message':'Association introuvable.'}}),404
+ now=datetime.now().isoformat(timespec='minutes')
+ existing=c.execute("SELECT * FROM association_memberships WHERE association_id=? AND user_id=? AND member_kind=?",(aid,request.android_uid,member_kind)).fetchone()
+ if existing and existing['status']=='approved': c.close(); return jsonify({'ok':True,'message':'Vous êtes déjà adhérent de cette association.','status':'approved'})
+ if existing: c.execute("UPDATE association_memberships SET status='pending',requested_at=?,reviewed_by_user_id=NULL,reviewed_at=NULL,rejection_reason=NULL WHERE id=?",(now,existing['id']))
+ else: c.execute("INSERT INTO association_memberships(association_id,user_id,member_kind,role_code,status,requested_at) VALUES(?,?,?,?, 'pending',?)",(aid,request.android_uid,member_kind,('member' if member_kind=='member' else 'volunteer'),now))
+ c.commit(); c.close(); return jsonify({'ok':True,'message':'Demande d’adhésion envoyée.','status':'pending'})
 
 @app.get('/api/v1/public/map')
 def android_public_map():
