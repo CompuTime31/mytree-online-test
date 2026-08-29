@@ -4768,7 +4768,7 @@ def android_public_map():
  FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
  LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC LIMIT ?",params+[limit]).fetchall()
  trees=[dict(id=x['id'],code=x['tree_code'] or '',species=x['species'] or '',species_name=x['species_name'] or x['species'] or 'Arbre',
-             lat=x['latitude'],lng=x['longitude'],symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
+             lat=x['latitude'] if x['latitude'] is not None else 0.0,lng=x['longitude'] if x['longitude'] is not None else 0.0,symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
              association_id=x['association_id'],association_name=x['association_name'],planter_name=x['planter_name']) for x in rows]
  c.close(); return jsonify({'trees':trees,'zones':[],'events':[],'total':total,'returned':len(trees),'truncated':total>len(trees)})
 
@@ -4947,17 +4947,21 @@ def android_home():
 @app.get('/api/v1/map')
 @android_auth
 def android_map():
- c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid); mine=request.args.get('mine')=='1'
- w=["t.active=1","t.approval_status='approved'","t.latitude IS NOT NULL","t.longitude IS NOT NULL"]; args=[]
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid); mine=request.args.get('mine')=='1'; for_list=request.args.get('list')=='1'; kpi=clean(request.args.get('kpi')).lower()
+ w=["t.active=1","t.approval_status='approved'"]; args=[]
+ if not for_list: w += ["t.latitude IS NOT NULL","t.longitude IS NOT NULL"]
  if mine:
   if aid: w.append("t.association_id=?"); args.append(aid)
   else: w.append("t.planted_by_user_id=?"); args.append(uid)
+ if kpi=='watering': w.append("(t.watering_status='À arroser' OR t.watering_status='A arroser')")
+ elif kpi=='watch': w.append("t.health_status IN ('À surveiller','A surveiller','Malade','Critique')")
+ elif kpi=='healthy': w.append("t.health_status IN ('Bonne santé','Bon','Sain')")
  rows=c.execute("""SELECT t.id,t.tree_code,t.species,t.species_id,t.latitude,t.longitude,t.association_id,
  s.name_fr species_name,a.name association_name,a.map_symbol,u.name planter_name
  FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
  LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC",args).fetchall()
  trees=[dict(id=x['id'],code=x['tree_code'] or '',species=x['species'] or '',species_name=x['species_name'] or x['species'] or 'Arbre',
-             lat=x['latitude'],lng=x['longitude'],symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
+             lat=x['latitude'] if x['latitude'] is not None else 0.0,lng=x['longitude'] if x['longitude'] is not None else 0.0,symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
              association_id=x['association_id'],association_name=x['association_name'],planter_name=x['planter_name']) for x in rows]
  zones=[]; events=[]
  if request.args.get('zones')=='1':
