@@ -360,6 +360,9 @@ def init_db():
  CREATE INDEX IF NOT EXISTS idx_trees_approval_active ON trees(approval_status,active);
  CREATE INDEX IF NOT EXISTS idx_trees_gps ON trees(latitude,longitude);
  CREATE INDEX IF NOT EXISTS idx_trees_species ON trees(species_id,species);
+ CREATE INDEX IF NOT EXISTS idx_trees_species_status ON trees(species_id,active,approval_status);
+ CREATE INDEX IF NOT EXISTS idx_trees_association_status ON trees(association_id,active,approval_status);
+ CREATE INDEX IF NOT EXISTS idx_trees_planter_status ON trees(planted_by_user_id,active,approval_status);
  CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role,active);
  CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,is_read,created_at);
  CREATE INDEX IF NOT EXISTS idx_notifications_action_pending ON notifications(user_id,action_type,decision,is_read);
@@ -2955,13 +2958,19 @@ def volunteer_profile():
  c=db(); u=c.execute('SELECT * FROM users WHERE id=?',(session['uid'],)).fetchone()
  if request.method=='POST':
   values=user_form_values(request.form); errors=validate_user_form(c,values,user_id=session['uid'])
+  current_pw=str(request.form.get('current_password') or ''); new_pw=str(request.form.get('new_password') or ''); confirm_pw=str(request.form.get('password_confirm') or '')
+  if current_pw or new_pw or confirm_pw:
+   if not check_password_hash(u['password_hash'],current_pw): errors.append('Le mot de passe actuel est incorrect.')
+   if len(new_pw)<6: errors.append('Le nouveau mot de passe doit contenir au moins 6 caractères.')
+   if new_pw!=confirm_pw: errors.append('La confirmation du nouveau mot de passe ne correspond pas.')
   if errors:
    for e in errors: flash(e)
   else:
    c.execute('UPDATE users SET first_name=?,last_name=?,name=?,sex=?,phone=?,email=?,wilaya_id=?,commune_id=?,birth_date=?,address=?,skills=?,availability=?,photo_url=? WHERE id=?',(values['first_name'],values['last_name'],user_display_name(values['first_name'],values['last_name']),values['sex'],values['phone'],values['email'],values['wilaya_id'],values['commune_id'],values['birth_date'],values['address'],values['skills'],values['availability'],values['photo_url'],session['uid']))
+   if new_pw: c.execute('UPDATE users SET password_hash=? WHERE id=?',(generate_password_hash(new_pw),session['uid']))
    c.commit(); session['name']=user_display_name(values['first_name'],values['last_name']); c.close(); flash('Profil mis à jour.'); return redirect('/volunteer/profile')
  opts=filter_options(c); c.close()
- return page('Mon profil',"""<div class="card"><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Prénom<input name="first_name" value="{{u.first_name or ''}}" required></label><label>Nom<input name="last_name" value="{{u.last_name or ''}}" required></label><label>Sexe<select name="sex"><option {% if u.sex=='Homme' %}selected{% endif %}>Homme</option><option {% if u.sex=='Femme' %}selected{% endif %}>Femme</option></select></label><label>Téléphone<input name="phone" value="{{u.phone or ''}}" required></label><label>E-mail<input type="email" name="email" value="{{u.email or ''}}"></label><label>Date de naissance<input type="date" name="birth_date" value="{{u.birth_date or ''}}"></label><label>Wilaya<select name="wilaya_id"><option value="">—</option>{% for x in wilayas %}<option value="{{x.id}}" {% if u.wilaya_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">—</option>{% for x in communes %}<option value="{{x.id}}" {% if u.commune_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label class="full">Adresse<input name="address" value="{{u.address or ''}}"></label><label>Compétences<input name="skills" value="{{u.skills or ''}}"></label><label>Disponibilité<input name="availability" value="{{u.availability or ''}}"></label>{{photo|safe}}<div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/volunteer">Annuler</a></div></form></div>""",u=u,photo=photo_fields(u['photo_url'] if u else '',prefix='profile'),**opts)
+ return page('Mon profil',"""<div class="card"><form method="post" class="form" id="plantingForm" onkeydown="if(event.key==='Enter' && event.target.tagName!=='TEXTAREA' && event.target.type!=='submit'){event.preventDefault()}"><label>Prénom<input name="first_name" value="{{u.first_name or ''}}" required></label><label>Nom<input name="last_name" value="{{u.last_name or ''}}" required></label><label>Sexe<select name="sex"><option {% if u.sex=='Homme' %}selected{% endif %}>Homme</option><option {% if u.sex=='Femme' %}selected{% endif %}>Femme</option></select></label><label>Téléphone<input name="phone" value="{{u.phone or ''}}" required></label><label>E-mail<input type="email" name="email" value="{{u.email or ''}}"></label><label>Date de naissance<input type="date" name="birth_date" value="{{u.birth_date or ''}}"></label><label>Wilaya<select name="wilaya_id"><option value="">—</option>{% for x in wilayas %}<option value="{{x.id}}" {% if u.wilaya_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Commune<select name="commune_id"><option value="">—</option>{% for x in communes %}<option value="{{x.id}}" {% if u.commune_id==x.id %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label class="full">Adresse<input name="address" value="{{u.address or ''}}"></label><label>Compétences<input name="skills" value="{{u.skills or ''}}"></label><label>Disponibilité<input name="availability" value="{{u.availability or ''}}"></label>{{photo|safe}}<div class="full card"><h3>🔐 Modifier le mot de passe</h3><p class="sub">Laissez ces champs vides si vous ne souhaitez pas modifier le mot de passe.</p><label>Mot de passe actuel<input type="password" name="current_password" autocomplete="current-password"></label><label>Nouveau mot de passe<input type="password" name="new_password" minlength="6" autocomplete="new-password"></label><label>Confirmer le nouveau mot de passe<input type="password" name="password_confirm" minlength="6" autocomplete="new-password"></label></div><div class="full"><button class="btn">Enregistrer</button> <a class="btn alt" href="/volunteer">Annuler</a></div></form></div>""",u=u,photo=photo_fields(u['photo_url'] if u else '',prefix='profile'),**opts)
 
 @app.route('/volunteer/team')
 @login_required
@@ -4738,27 +4747,45 @@ def android_join_association(aid):
 def android_public_map():
  c=db()
  w=["t.active=1","t.approval_status='approved'","t.latitude IS NOT NULL","t.longitude IS NOT NULL"]
+ params=[]
  if 'visibility' in columns(c,'trees'): w.append("COALESCE(t.visibility,'public')='public'")
+ # RC16.8: optional viewport filtering and hard safety limit for mobile clients.
+ # Existing clients can still omit bbox; Android requests a bounded result size.
+ try:
+  min_lat=float(request.args.get('min_lat')) if request.args.get('min_lat') is not None else None
+  max_lat=float(request.args.get('max_lat')) if request.args.get('max_lat') is not None else None
+  min_lng=float(request.args.get('min_lng')) if request.args.get('min_lng') is not None else None
+  max_lng=float(request.args.get('max_lng')) if request.args.get('max_lng') is not None else None
+ except (TypeError,ValueError):
+  min_lat=max_lat=min_lng=max_lng=None
+ if None not in (min_lat,max_lat,min_lng,max_lng):
+  w.extend(["t.latitude BETWEEN ? AND ?","t.longitude BETWEEN ? AND ?"]); params.extend([min_lat,max_lat,min_lng,max_lng])
+ try: limit=max(100,min(int(request.args.get('limit','5000')),10000))
+ except (TypeError,ValueError): limit=5000
+ total=c.execute("SELECT COUNT(*) n FROM trees t WHERE "+' AND '.join(w),params).fetchone()['n']
  rows=c.execute("""SELECT t.id,t.tree_code,t.species,t.species_id,t.latitude,t.longitude,t.association_id,
  s.name_fr species_name,a.name association_name,a.map_symbol,u.name planter_name
  FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
- LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC").fetchall()
+ LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC LIMIT ?",params+[limit]).fetchall()
  trees=[dict(id=x['id'],code=x['tree_code'] or '',species=x['species'] or '',species_name=x['species_name'] or x['species'] or 'Arbre',
              lat=x['latitude'],lng=x['longitude'],symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
              association_id=x['association_id'],association_name=x['association_name'],planter_name=x['planter_name']) for x in rows]
- c.close(); return jsonify({'trees':trees,'zones':[],'events':[]})
+ c.close(); return jsonify({'trees':trees,'zones':[],'events':[],'total':total,'returned':len(trees),'truncated':total>len(trees)})
 
 @app.get('/api/v1/public/species')
 def android_public_species():
  c=db()
+ # RC16.8: aggregate tree counts once instead of executing one COUNT sub-query per species.
  rows=c.execute("""SELECT s.id,s.name_fr,s.name_ar,s.name_en,s.scientific_name,s.category,s.water_need,
- s.watering_frequency_days,s.description,
- (SELECT COUNT(*) FROM trees t WHERE t.species_id=s.id AND t.active=1 AND t.approval_status='approved') tree_count
- FROM species s WHERE s.active=1 ORDER BY s.name_fr COLLATE NOCASE""").fetchall()
+ s.watering_frequency_days,s.description,COALESCE(tc.tree_count,0) tree_count
+ FROM species s
+ LEFT JOIN (SELECT species_id,COUNT(*) tree_count FROM trees
+            WHERE active=1 AND approval_status='approved' GROUP BY species_id) tc ON tc.species_id=s.id
+ WHERE s.active=1 ORDER BY s.name_fr COLLATE NOCASE""").fetchall()
  out=[dict(id=x['id'],name_fr=x['name_fr'] or '',name_ar=x['name_ar'] or '',name_en=x['name_en'] or '',
            scientific_name=x['scientific_name'] or '',category=x['category'] or '',water_need=x['water_need'] or '',
            watering_frequency_days=x['watering_frequency_days'],description=x['description'] or '',tree_count=x['tree_count']) for x in rows]
- c.close(); return jsonify({'species':out})
+ c.close(); response=jsonify({'species':out}); response.headers['Cache-Control']='public, max-age=300'; return response
 
 
 @app.get('/api/v1/public/geography')
@@ -4776,7 +4803,7 @@ def association_account_dashboard():
  c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
  if not a: c.close(); session.clear(); return redirect('/login?account_type=association')
  counts={'members':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n'],'pending':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='pending'",(aid,)).fetchone()['n'],'projects':c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n'],'trees':c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']}; c.close()
- return page('Association',"""<div class='section-title'><div><h2>🏛 {{a.name}}</h2><p class='sub'>Espace Association · {{a.code}}</p></div></div><div class='grid kpis'><a class='card kpi' href='/membership-requests'><small>Membres</small><b>{{counts.members}}</b><span>{{counts.pending}} demande(s)</span></a><a class='card kpi' href='/projects'><small>Projets</small><b>{{counts.projects}}</b></a><a class='card kpi' href='/trees'><small>Arbres</small><b>{{counts.trees}}</b></a></div><div class='card'><h3>Gestion de l’association</h3><div class='action-set'><a class='btn' href='/membership-requests'>Adhérents & rôles</a><a class='btn' href='/donations'>Dons</a><a class='btn' href='/projects'>Projets</a><a class='btn' href='/zones'>Zones</a><a class='btn' href='/nursery'>Stock / Pépinière</a><a class='btn' href='/equipment'>Inventaire matériel</a><a class='btn' href='/reports'>Finances & rapports</a><a class='btn alt' href='/public/associations/{{a.id}}'>Fiche publique</a></div></div>""",a=a,counts=counts)
+ return page('Association',"""<div class='section-title'><div><h2>🏛 {{a.name}}</h2><p class='sub'>Espace Association · {{a.code}}</p></div></div><div class='grid kpis'><a class='card kpi' href='/membership-requests'><small>Membres</small><b>{{counts.members}}</b><span>{{counts.pending}} demande(s)</span></a><a class='card kpi' href='/projects'><small>Projets</small><b>{{counts.projects}}</b></a><a class='card kpi' href='/trees'><small>Arbres</small><b>{{counts.trees}}</b></a></div><div class='card'><h3>Gestion de l’association</h3><div class='action-set'><a class='btn' href='/membership-requests'>Adhérents & rôles</a><a class='btn' href='/donations'>Dons</a><a class='btn' href='/projects'>Projets</a><a class='btn' href='/zones'>Zones</a><a class='btn' href='/nursery'>Stock / Pépinière</a><a class='btn' href='/equipment'>Inventaire matériel</a><a class='btn' href='/reports/operations'>Finances & rapports</a><a class='btn alt' href='/public/associations/{{a.id}}'>Fiche publique</a></div></div>""",a=a,counts=counts)
 
 @app.post('/api/v1/auth/association-login')
 def android_association_login():
@@ -4827,9 +4854,33 @@ def android_update_me():
  if phone:
   duplicate=c.execute("SELECT id FROM users WHERE phone=? AND id<>?",(phone,request.android_uid)).fetchone()
   if duplicate: c.close(); return jsonify({'error':{'message':'Ce numéro de téléphone est déjà utilisé.'}}),409
- c.execute("UPDATE users SET first_name=?,last_name=?,name=?,phone=?,email=?,preferred_language=? WHERE id=?",(first,last,name or first or last,phone,email,lang,request.android_uid)); c.commit()
+ photo_url=None
+ current=c.execute("SELECT photo_url FROM users WHERE id=?",(request.android_uid,)).fetchone(); photo_url=(current['photo_url'] if current else '') or ''
+ if body.get('remove_photo'): photo_url=''
+ raw_photo=str(body.get('photo_base64') or '')
+ if raw_photo:
+  try:
+   photo_data=base64.b64decode(raw_photo,validate=True)
+   if len(photo_data)>8*1024*1024: c.close(); return jsonify({'error':{'message':'La photo dépasse 8 Mo.'}}),400
+   folder=os.path.join(DATA_DIR,'uploads','profiles'); os.makedirs(folder,exist_ok=True)
+   filename='profile-'+str(request.android_uid)+'-'+secrets.token_hex(6)+'.jpg'
+   with open(os.path.join(folder,filename),'wb') as f: f.write(photo_data)
+   photo_url='/uploads/profiles/'+filename
+  except Exception: c.close(); return jsonify({'error':{'message':'Photo invalide.'}}),400
+ c.execute("UPDATE users SET first_name=?,last_name=?,name=?,phone=?,email=?,preferred_language=?,photo_url=? WHERE id=?",(first,last,name or first or last,phone,email,lang,photo_url,request.android_uid)); c.commit()
  u=c.execute("SELECT * FROM users WHERE id=?",(request.android_uid,)).fetchone(); c.close()
  return jsonify({'ok':True,'message':'Profil mis à jour.','user':dict(id=u['id'],name=u['name'] or '',first_name=u['first_name'] or '',last_name=u['last_name'] or '',phone=u['phone'] or '',email=u['email'] or '',photo_url=u['photo_url'] or '',preferred_language=u['preferred_language'] or 'fr')})
+
+@app.post('/api/v1/auth/password')
+@android_auth
+def android_change_password():
+ body=request.get_json(silent=True) or {}; current=str(body.get('current_password') or ''); new=str(body.get('new_password') or ''); confirm=str(body.get('password_confirm') or '')
+ c=db(); u=c.execute('SELECT password_hash FROM users WHERE id=?',(request.android_uid,)).fetchone()
+ if not u or not check_password_hash(u['password_hash'],current): c.close(); return jsonify({'error':{'message':'Mot de passe actuel incorrect.'}}),400
+ if len(new)<6: c.close(); return jsonify({'error':{'message':'Le nouveau mot de passe doit contenir au moins 6 caractères.'}}),400
+ if new!=confirm: c.close(); return jsonify({'error':{'message':'La confirmation du nouveau mot de passe ne correspond pas.'}}),400
+ c.execute('UPDATE users SET password_hash=? WHERE id=?',(generate_password_hash(new),request.android_uid)); c.commit(); c.close()
+ return jsonify({'ok':True,'message':'Mot de passe modifié.'})
 
 @app.post('/api/v1/auth/logout')
 @android_auth
