@@ -3594,7 +3594,9 @@ def volunteer_donate():
   except: aid=0
   if not aid or not c.execute("SELECT 1 FROM associations WHERE id=? AND status='active'",(aid,)).fetchone(): error='Choisissez l’association bénéficiaire.'
   if not error:
-   receipt='PENDING-'+datetime.now().strftime('%Y%m%d-%H%M%S'); now=datetime.now().isoformat(timespec='minutes'); c.execute('INSERT INTO donation_groups(status,receipt_number,received_at,created_by_user_id,created_at) VALUES(?,?,?,?,?)',('En attente',receipt,date.today().isoformat(),session['uid'],now)); gid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']; count=0
+   if 'association_id' not in columns(c,'donation_groups'):
+    c.execute('ALTER TABLE donation_groups ADD COLUMN association_id INTEGER')
+   receipt='PENDING-'+datetime.now().strftime('%Y%m%d-%H%M%S'); now=datetime.now().isoformat(timespec='minutes'); c.execute('INSERT INTO donation_groups(status,receipt_number,received_at,created_by_user_id,created_at,association_id) VALUES(?,?,?,?,?,?)',('En attente',receipt,date.today().isoformat(),session['uid'],now,aid)); gid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']; count=0
    try: amount=max(0,float(request.form.get('amount') or 0))
    except: amount=0
    if amount>0:_add_donation_line(c,gid,None,'En attente',receipt,'Argent',amount=amount); count+=1
@@ -4821,8 +4823,15 @@ def android_context():
 @app.get('/api/v1/home')
 @android_auth
 def android_home():
- c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid)
- if aid:
+ c=db(); uid=request.android_uid; aid=android_assoc_id(c,uid); global_scope=request.args.get('scope')=='global'
+ if global_scope:
+  tree_where="active=1"; tree_args=()
+  tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where).fetchone()['n']
+  proj_n=c.execute("SELECT COUNT(*) n FROM projects WHERE active=1").fetchone()['n']
+  zone_n=c.execute("SELECT COUNT(*) n FROM zones WHERE active=1").fetchone()['n']
+  miss_n=c.execute("SELECT COUNT(*) n FROM missions WHERE active=1").fetchone()['n']
+  volunteers=c.execute("SELECT COUNT(*) n FROM users WHERE active=1 AND role<>'association_account'").fetchone()['n']
+ elif aid:
   tree_where="active=1 AND association_id=?"; tree_args=(aid,)
   tree_n=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where,tree_args).fetchone()['n']
   proj_n=c.execute("SELECT COUNT(*) n FROM projects WHERE active=1 AND association_id=?",(aid,)).fetchone()['n']
@@ -4837,7 +4846,9 @@ def android_home():
  to_watch=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where+" AND COALESCE(health_status,'Bon')<>'Bon'",tree_args).fetchone()['n']
  healthy=c.execute("SELECT COUNT(*) n FROM trees WHERE "+tree_where+" AND COALESCE(health_status,'Bon')='Bon'",tree_args).fetchone()['n']
  species_n=c.execute("SELECT COUNT(DISTINCT COALESCE(species_id,species)) n FROM trees WHERE "+tree_where,tree_args).fetchone()['n']
- if aid:
+ if global_scope:
+  intervention_n=c.execute("SELECT COUNT(*) n FROM interventions i JOIN trees t ON t.id=i.tree_id WHERE t.active=1 AND i.status='Planifiée'").fetchone()['n']
+ elif aid:
   intervention_n=c.execute("SELECT COUNT(*) n FROM interventions i JOIN trees t ON t.id=i.tree_id WHERE t.active=1 AND t.association_id=? AND i.status='Planifiée'",(aid,)).fetchone()['n']
  else:
   intervention_n=c.execute("SELECT COUNT(*) n FROM interventions i JOIN trees t ON t.id=i.tree_id WHERE t.active=1 AND t.planted_by_user_id=? AND i.status='Planifiée'",(uid,)).fetchone()['n']
@@ -4981,16 +4992,19 @@ def android_create_planting():
 def api_v1_donation_options():
  uid=request.android_uid; c=db(); aid=android_assoc_id(c,uid)
  species=c.execute("SELECT id,name_fr,name_ar FROM species WHERE active=1 ORDER BY name_fr").fetchall()
+ assocs=c.execute("SELECT id,code,name,map_symbol FROM associations WHERE status='active' ORDER BY name").fetchall()
  projects=[]
  if aid:
   projects=c.execute("SELECT id,name FROM projects WHERE active=1 AND association_id=? ORDER BY name",(aid,)).fetchall()
  c.close()
- return jsonify(ok=True,association_id=aid,species=[dict(id=x['id'],name_fr=x['name_fr'] or '',name_ar=x['name_ar'] or '') for x in species],projects=[dict(id=x['id'],name=x['name']) for x in projects])
+ return jsonify(ok=True,association_id=aid,associations=[dict(id=x['id'],code=x['code'] or '',name=x['name'] or '',symbol=x['map_symbol'] or '🌿') for x in assocs],species=[dict(id=x['id'],name_fr=x['name_fr'] or '',name_ar=x['name_ar'] or '') for x in species],projects=[dict(id=x['id'],name=x['name']) for x in projects])
 
 @app.post('/api/v1/donations')
 @android_auth
 def api_v1_create_donation():
- uid=request.android_uid; data=request.get_json(silent=True) or {}; c=db(); aid=android_assoc_id(c,uid)
+ uid=request.android_uid; data=request.get_json(silent=True) or {}; c=db(); aid=int(data.get('association_id') or 0)
+ target=c.execute("SELECT id FROM associations WHERE id=? AND status='active'",(aid,)).fetchone() if aid else None
+ if not target: c.close(); return api_error('validation','Choisissez une association bénéficiaire.',400)
  amount=max(0,float(data.get('amount') or 0)); unknown_qty=max(0,int(data.get('unknown_tree_quantity') or 0)); lines=data.get('trees') or []
  valid=[]
  for line in lines:
@@ -5001,8 +5015,10 @@ def api_v1_create_donation():
    if ok: valid.append((sid,qty))
  if amount<=0 and unknown_qty<=0 and not valid:
   c.close(); return api_error('validation','Ajoutez un montant ou au moins un arbre.',400)
+ if 'association_id' not in columns(c,'donation_groups'):
+  c.execute('ALTER TABLE donation_groups ADD COLUMN association_id INTEGER')
  receipt='PENDING-'+datetime.now().strftime('%Y%m%d-%H%M%S'); now=datetime.now().isoformat(timespec='minutes')
- c.execute('INSERT INTO donation_groups(status,receipt_number,received_at,created_by_user_id,created_at) VALUES(?,?,?,?,?)',('En attente',receipt,date.today().isoformat(),uid,now)); gid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']
+ c.execute('INSERT INTO donation_groups(status,receipt_number,received_at,created_by_user_id,created_at,association_id) VALUES(?,?,?,?,?,?)',('En attente',receipt,date.today().isoformat(),uid,now,aid)); gid=c.execute('SELECT last_insert_rowid() id').fetchone()['id']
  if amount>0: _add_donation_line(c,gid,None,'En attente',receipt,'Argent',amount=amount)
  for sid,qty in valid: _add_donation_line(c,gid,None,'En attente',receipt,'Arbres',qty=qty,species_id=sid)
  if unknown_qty>0:
@@ -5010,7 +5026,7 @@ def api_v1_create_donation():
  donor=c.execute('SELECT name FROM users WHERE id=?',(uid,)).fetchone(); donor_name=(donor['name'] if donor else 'Un bénévole')
  notify_admins_in_tx(c,'Nouveau don à valider',donor_name+' a déclaré un don ('+receipt+').','/donations?status=pending','Don','donation_group',gid)
  c.commit(); c.close(); log_action('create','donation_group',gid,'Don Android natif '+receipt)
- return jsonify(ok=True,group_id=gid,receipt=receipt,status='En attente',message='Don envoyé pour validation.'),201
+ return jsonify(ok=True,group_id=gid,receipt=receipt,status='En attente',message='Don envoyé'),201
 
 @app.get('/api/v1/field-options')
 @android_auth
