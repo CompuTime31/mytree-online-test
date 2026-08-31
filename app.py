@@ -5475,6 +5475,42 @@ def android_admin_volunteers():
  return jsonify({'items':[dict(id=x['id'],name=x['name'] or '',email=x['email'],phone=x['phone'],status=x['status'] or '',
  joined_at=x['created_at'] or '',association_count=x['association_count'],tree_count=x['tree_count']) for x in rows]})
 
+@app.post('/api/v1/association-requests')
+@android_auth
+def android_create_association_request():
+ body=request.get_json(silent=True) or {}; cleanv=lambda k: clean(body.get(k))
+ name=cleanv('name'); login_id=cleanv('association_login_id'); password=str(body.get('association_password') or ''); org=cleanv('organization_type') or 'volunteer_group'; approval=cleanv('approval_number'); symbol=cleanv('map_symbol') or '🌳'
+ if not name: return jsonify({'error':{'message':'Le nom de l’association est obligatoire.'}}),400
+ if len(login_id)<4: return jsonify({'error':{'message':'Choisissez un ID Association d’au moins 4 caractères.'}}),400
+ if len(password)<6: return jsonify({'error':{'message':'Le mot de passe doit contenir au moins 6 caractères.'}}),400
+ if org not in ('volunteer_group','approved_association'): return jsonify({'error':{'message':'Type d’association invalide.'}}),400
+ raw_doc=str(body.get('approval_document_base64') or '')
+ if org=='approved_association' and (not approval or not raw_doc): return jsonify({'error':{'message':'Numéro et document d’agrément obligatoires.'}}),400
+ c=db()
+ if c.execute("SELECT 1 FROM association_accounts WHERE lower(login_id)=lower(?)",(login_id,)).fetchone() or c.execute("SELECT 1 FROM association_creation_requests WHERE status='pending' AND lower(COALESCE(requested_login_id,''))=lower(?)",(login_id,)).fetchone(): c.close(); return jsonify({'error':{'message':'Cet ID Association est déjà utilisé.'}}),409
+ if symbol not in available_association_symbols(c):
+  symbols=available_association_symbols(c); symbol=symbols[0] if symbols else '🌳'
+ rel_doc=doc_name=doc_mime=None
+ if raw_doc:
+  try:
+   data=base64.b64decode(raw_doc,validate=True)
+   if len(data)>8*1024*1024: c.close(); return jsonify({'error':{'message':'Le document dépasse 8 Mo.'}}),400
+   doc_name=os.path.basename(str(body.get('approval_document_name') or 'agrement'))
+   doc_mime=cleanv('approval_document_mime') or 'application/octet-stream'
+   ext=os.path.splitext(doc_name)[1].lower()
+   if ext not in ('.jpg','.jpeg','.png','.pdf'):
+    ext={ 'image/jpeg':'.jpg','image/png':'.png','application/pdf':'.pdf'}.get(doc_mime,'')
+   if ext not in ('.jpg','.jpeg','.png','.pdf'): c.close(); return jsonify({'error':{'message':'Format accepté : JPG, JPEG, PNG ou PDF.'}}),400
+   folder=os.path.join(DATA_DIR,'uploads','association_approvals'); os.makedirs(folder,exist_ok=True); fn=secrets.token_hex(12)+ext
+   with open(os.path.join(folder,fn),'wb') as f: f.write(data)
+   rel_doc='uploads/association_approvals/'+fn
+  except Exception: c.close(); return jsonify({'error':{'message':'Document d’agrément invalide.'}}),400
+ now=datetime.now().isoformat(timespec='minutes')
+ cur=c.execute("INSERT INTO association_creation_requests(requested_by_user_id,name,description,address,phone,email,status,requested_at,requested_map_symbol,requested_login_id,requested_password_hash,organization_type,approval_number,approval_document,approval_document_name,approval_document_mime) VALUES(?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)",(request.android_uid,name,cleanv('description'),cleanv('address'),cleanv('phone'),cleanv('email'),now,symbol,login_id,generate_password_hash(password),org,approval,rel_doc,doc_name,doc_mime)); rid=cur.lastrowid
+ for x in c.execute("SELECT id FROM users WHERE active=1 AND role='super_admin'").fetchall(): c.execute("INSERT INTO notifications(user_id,title,message,link,category,action_type,action_id,is_read,created_at) VALUES(?,?,?,?,?,?,?,0,?)",(x['id'],'Nouvelle demande d’association',name+' demande son enregistrement dans MyTree.','/association-requests','Action requise','association_request',rid,now))
+ c.commit(); c.close(); log_action('request_association','association_request',rid)
+ return jsonify({'ok':True,'request_id':rid,'status':'pending','message':'Demande envoyée – En attente de validation.'}),201
+
 @app.get('/api/v1/admin/association-requests')
 @android_auth
 def android_admin_association_requests():
