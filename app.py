@@ -1179,6 +1179,12 @@ def filter_options(c):
 
 @app.route('/login',methods=['GET','POST'])
 def login():
+ # RC16.16.1: never show the login form to an already authenticated account.
+ if request.method=='GET':
+  if session.get('account_type')=='association' and session.get('association_id'):
+   return redirect('/association/dashboard')
+  if session.get('uid'):
+   return redirect('/' if is_admin() else '/volunteer')
  login_type=clean(request.values.get('account_type')) or 'personal'
  if login_type not in ('personal','association'): login_type='personal'
  if request.method=='POST':
@@ -1194,8 +1200,16 @@ def login():
    u=c.execute('SELECT u.*,r.name role_name FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.phone=? AND u.active=1',(login_value,)).fetchone(); success=bool(u and check_password_hash(u['password_hash'],password))
    c.execute('INSERT INTO login_history(user_id,login_value,success,ip_address,created_at) VALUES(?,?,?,?,?)',(u['id'] if u else None,login_value,1 if success else 0,request.headers.get('X-Forwarded-For',request.remote_addr),datetime.now().isoformat(timespec='seconds')))
    if success:
-    saved_lang=current_lang(); session.clear(); session.permanent=request.form.get('remember')=='1'; session.update(uid=u['id'],account_type='personal',name=u['name'] or user_display_name(u['first_name'],u['last_name']),role=u['role_name'] or u['role'] or 'volunteer');
-    if request.cookies.get('mytree_lang_mode')=='manual': session['lang']=saved_lang; c.execute('UPDATE users SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),u['id'])); c.commit(); c.close(); target=request.form.get('next') or request.args.get('next'); return redirect(target if target and target.startswith('/') else ('/' if is_admin() else '/volunteer'))
+    saved_lang=current_lang()
+    session.clear()
+    session.permanent=request.form.get('remember')=='1'
+    session.update(uid=u['id'],account_type='personal',name=u['name'] or user_display_name(u['first_name'],u['last_name']),role=u['role_name'] or u['role'] or 'volunteer')
+    if request.cookies.get('mytree_lang_mode')=='manual':
+     session['lang']=saved_lang
+    c.execute('UPDATE users SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),u['id']))
+    c.commit(); c.close()
+    target=request.form.get('next') or request.args.get('next')
+    return redirect(target if target and target.startswith('/') else ('/' if is_admin() else '/volunteer'))
    c.commit(); c.close(); flash('Numéro de téléphone ou mot de passe incorrect.')
  return page('Connexion',r'''<div class="card login-card"><div style="text-align:center;margin-bottom:18px"><div style="font-size:44px">🌳 🇩🇿</div><h2>Connexion MyTree</h2><p class="sub">Choisissez votre type de compte.</p></div><div class="action-set" style="margin-bottom:16px"><a class="btn {{'alt' if login_type!='personal' else ''}}" href="/login?account_type=personal">👤 Personnel / Bénévole</a><a class="btn {{'alt' if login_type!='association' else ''}}" href="/login?account_type=association">🏛 Association</a></div><form method="post"><input type="hidden" name="account_type" value="{{login_type}}"><label>{{'ID Association' if login_type=='association' else 'Numéro de téléphone'}}<input name="login" autocomplete="username" required></label><label style="display:block;margin-top:14px">Mot de passe<input type="password" name="password" autocomplete="current-password" required></label><input type="hidden" name="next" value="{{request.args.get('next','')}}"><p><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="remember" value="1" style="width:auto"> Se souvenir de moi pendant 30 jours</label></p><div class="login-actions"><button class="btn">🔐 Se connecter</button>{% if login_type=='personal' %}<a class="btn alt" href="/public/register">👤 Créer un compte personnel</a><a class="btn alt" href="/forgot-password">🔑 Mot de passe oublié ?</a>{% endif %}<a class="btn alt" href="/public">← Retour</a></div></form></div>''',login_type=login_type)
 
