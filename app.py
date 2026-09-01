@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.1 Test Consolidé — Comptes séparés'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.1 Consolidation — Messagerie & Suggestions'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -737,7 +737,7 @@ ACTION_UI_SCRIPT='''<script>
 </script>'''
 
 def volunteer_nav():
- links=[('/volunteer','🏠 Accueil',None,'mobile-primary'),('/volunteer/field','🚜 Mode Terrain',None,'mobile-primary'),('/volunteer/trees','🌳 Mes arbres','tree.view','desktop-only'),('/volunteer/trees/no-gps','📍 Arbres sans GPS','tree.view','desktop-only'),('/volunteer/gps-quick','⚡ GPS rapide','tree.view','desktop-only'),('/planting/new','🌱 Planter','tree.create','desktop-only'),('/volunteer/watering','💧 Arroser','watering.view','desktop-only'),('/volunteer/scan','▣ Scanner QR','tree.view','mobile-primary'),('/map','📍 Carte','map.view','mobile-primary'),('/volunteer/donate','🎁 Faire un don',None,'desktop-only'),('/my-associations','🏛 Mes associations',None,'desktop-only'),('/volunteer/events','📆 Événements','event.view','desktop-only'),('/volunteer/missions','📋 Missions','mission.view','desktop-only'),('/interventions','🛠 Interventions','intervention.view','desktop-only'),('/volunteer/team','👥 Mon équipe','team.view','desktop-only'),('/notifications','🔔 Alertes','notification.view','mobile-primary'),('/volunteer/profile','👤 Profil',None,'mobile-primary')]
+ links=[('/volunteer','🏠 Accueil',None,'mobile-primary'),('/volunteer/field','🚜 Mode Terrain',None,'mobile-primary'),('/volunteer/trees','🌳 Mes arbres','tree.view','desktop-only'),('/volunteer/trees/no-gps','📍 Arbres sans GPS','tree.view','desktop-only'),('/volunteer/gps-quick','⚡ GPS rapide','tree.view','desktop-only'),('/planting/new','🌱 Planter','tree.create','desktop-only'),('/volunteer/watering','💧 Arroser','watering.view','desktop-only'),('/volunteer/scan','▣ Scanner QR','tree.view','mobile-primary'),('/map','📍 Carte','map.view','mobile-primary'),('/volunteer/donate','🎁 Faire un don',None,'desktop-only'),('/my-associations','🏛 Mes associations',None,'desktop-only'),('/volunteer/events','📆 Événements','event.view','desktop-only'),('/volunteer/missions','📋 Missions','mission.view','desktop-only'),('/interventions','🛠 Interventions','intervention.view','desktop-only'),('/volunteer/team','👥 Mon équipe','team.view','desktop-only'),('/messages','💬 Messagerie',None,'desktop-only'),('/suggestions','💡 Suggestions',None,'desktop-only'),('/notifications','🔔 Alertes','notification.view','mobile-primary'),('/volunteer/profile','👤 Profil',None,'mobile-primary')]
  body='<aside class="vol-nav"><div class="brand">🌳 My Tree 🇩🇿</div><div class="slogan">Espace bénévole privé</div>'
  for href,label,perm,css in links:
   if not perm or has_permission(perm): body+=f'<a class="{css}" href="{href}">{label}</a>'
@@ -761,6 +761,8 @@ def association_nav():
   ('/teams','👥 Équipes','team.view'),
   ('/membership-requests','👥 Demandes membres',None if admin else '__admin__'),
   ('/collaborations','🤝 Collaborations',None if admin else '__admin__'),
+  ('/messages','💬 Messagerie',None),
+  ('/suggestions','💡 Suggestions',None),
   ('/notifications','🔔 Notifications','notification.view'),
  ]
  body='<aside class="vol-nav association-nav"><div class="brand">🏛 '+str(ctx.get('name') or 'Association')+'</div><div class="slogan">'+('Administration de l’association' if admin else 'Profil bénévole de l’association')+'</div>'
@@ -4866,7 +4868,7 @@ def api_v1_public_register():
 
 @app.get('/api/v1/version')
 def api_v1_version():
- return jsonify({'ok':True,'version':'RC16.13-Web-Map-Tree-Visibility-Fix','association_public_detail':True,'association_join':True})
+ return jsonify({'ok':True,'version':'RC16.17.1-Consolidation-Version-Tracking','association_public_detail':True,'association_join':True,'messaging':True,'suggestions':True})
 
 @app.get('/api/v1/public/home')
 def android_public_home():
