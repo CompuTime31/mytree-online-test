@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS association_collaborations(id INTEGER PRIMARY KEY AUT
 CREATE TABLE IF NOT EXISTS association_collaboration_history(id INTEGER PRIMARY KEY AUTOINCREMENT,collaboration_id INTEGER NOT NULL,action TEXT NOT NULL,actor_user_id INTEGER,association_id INTEGER,details TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS association_roles(id INTEGER PRIMARY KEY AUTOINCREMENT,association_id INTEGER NOT NULL,code TEXT NOT NULL,label TEXT NOT NULL,level INTEGER DEFAULT 10,active INTEGER DEFAULT 1,UNIQUE(association_id,code));
 CREATE TABLE IF NOT EXISTS user_contexts(user_id INTEGER PRIMARY KEY,context_type TEXT DEFAULT 'personal',association_id INTEGER,updated_at TEXT);
+CREATE TABLE IF NOT EXISTS message_threads(id INTEGER PRIMARY KEY AUTOINCREMENT,subject TEXT NOT NULL,created_by_user_id INTEGER,created_by_association_id INTEGER,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS message_participants(id INTEGER PRIMARY KEY AUTOINCREMENT,thread_id INTEGER NOT NULL,user_id INTEGER,association_id INTEGER,participant_type TEXT NOT NULL,last_read_at TEXT,UNIQUE(thread_id,user_id,association_id,participant_type));
+CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,thread_id INTEGER NOT NULL,sender_user_id INTEGER,sender_association_id INTEGER,body TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_suggestions(id INTEGER PRIMARY KEY AUTOINCREMENT,author_user_id INTEGER,author_association_id INTEGER,title TEXT NOT NULL,description TEXT NOT NULL,category TEXT DEFAULT 'Amélioration',status TEXT DEFAULT 'Nouvelle',admin_response TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 '''
 
@@ -4688,6 +4693,104 @@ def android_api_root():
  return jsonify({'ok':True,'api':'v1','service':'MyTree Professional Android API','version':APP_VERSION})
 
 
+
+# RC16.17 — Messagerie interne + Suggestions.
+def _msg_identity(c):
+ uid=session.get('uid'); aid=session.get('association_id') if session.get('account_type')=='association' else None
+ return uid,aid
+
+def _is_super(c,uid):
+ if not uid: return False
+ r=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone(); return bool(r and r['role']=='super_admin')
+
+def _thread_allowed(c,tid,uid,aid):
+ if _is_super(c,uid): return True
+ if aid: return bool(c.execute("SELECT 1 FROM message_participants WHERE thread_id=? AND association_id=?",(tid,aid)).fetchone())
+ return bool(uid and c.execute("SELECT 1 FROM message_participants WHERE thread_id=? AND user_id=?",(tid,uid)).fetchone())
+
+@app.route('/messages',methods=['GET','POST'])
+def web_messages():
+ uid,aid=_msg_identity(db())
+ if not uid and not aid: return redirect('/login')
+ c=db()
+ if request.method=='POST':
+  subject=clean(request.form.get('subject')) or 'Conversation'; body=clean(request.form.get('body')); target=clean(request.form.get('target'))
+  if body and target:
+   now=datetime.now().isoformat(timespec='minutes'); cur=c.execute("INSERT INTO message_threads(subject,created_by_user_id,created_by_association_id,created_at,updated_at) VALUES(?,?,?,?,?)",(subject,uid,aid,now,now)); tid=cur.lastrowid
+   if uid: c.execute("INSERT OR IGNORE INTO message_participants(thread_id,user_id,participant_type,last_read_at) VALUES(?,?,'user',?)",(tid,uid,now))
+   if aid: c.execute("INSERT OR IGNORE INTO message_participants(thread_id,association_id,participant_type,last_read_at) VALUES(?,?,'association',?)",(tid,aid,now))
+   if target=='super':
+    for x in c.execute("SELECT id FROM users WHERE role='super_admin' AND active=1").fetchall(): c.execute("INSERT OR IGNORE INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,x['id']))
+   elif target.startswith('a:') and uid:
+    ta=int(target[2:]); ok=c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(ta,uid)).fetchone()
+    if ok: c.execute("INSERT OR IGNORE INTO message_participants(thread_id,association_id,participant_type) VALUES(?,?,'association')",(tid,ta))
+   elif target.startswith('u:') and aid:
+    tu=int(target[2:]); ok=c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,tu)).fetchone()
+    if ok: c.execute("INSERT OR IGNORE INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,tu))
+   c.execute("INSERT INTO messages(thread_id,sender_user_id,sender_association_id,body,created_at) VALUES(?,?,?,?,?)",(tid,uid,aid,body,now)); c.commit(); flash('Message envoyé.')
+  return redirect('/messages')
+ superv=_is_super(c,uid)
+ if superv: rows=c.execute("SELECT t.*, (SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t ORDER BY t.updated_at DESC").fetchall()
+ elif aid: rows=c.execute("SELECT t.*, (SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.association_id=? GROUP BY t.id ORDER BY t.updated_at DESC",(aid,)).fetchall()
+ else: rows=c.execute("SELECT t.*, (SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.user_id=? GROUP BY t.id ORDER BY t.updated_at DESC",(uid,)).fetchall()
+ targets=[('super','🛡 Super Admin')]
+ if uid and not superv:
+  targets += [('a:'+str(x['id']),'🏛 '+x['name']) for x in c.execute("SELECT a.id,a.name FROM association_memberships m JOIN associations a ON a.id=m.association_id WHERE m.user_id=? AND m.status='approved' AND a.status='active'",(uid,)).fetchall()]
+ if aid:
+  targets += [('u:'+str(x['id']),'👤 '+(x['name'] or x['phone'])) for x in c.execute("SELECT u.id,u.name,u.phone FROM association_memberships m JOIN users u ON u.id=m.user_id WHERE m.association_id=? AND m.status='approved'",(aid,)).fetchall()]
+ c.close()
+ return page('Messagerie',"""<div class='section-title'><h2>💬 Messagerie</h2></div><div class='card'><h3>Nouveau message</h3><form method='post'><label>Destinataire<select name='target' required>{% for v,l in targets %}<option value='{{v}}'>{{l}}</option>{% endfor %}</select></label><label>Objet<input name='subject' required></label><label>Message<textarea name='body' required></textarea></label><button class='btn'>Envoyer</button></form></div><div class='card'><h3>{{'Supervision de toutes les conversations' if superv else 'Conversations'}}</h3>{% for x in rows %}<p><b>{{x.subject}}</b><br><span class='sub'>{{x.last_body or ''}} · {{x.updated_at}}</span></p>{% else %}<p class='sub'>Aucune conversation.</p>{% endfor %}</div>""",rows=rows,targets=targets,superv=superv)
+
+@app.route('/suggestions',methods=['GET','POST'])
+def web_suggestions():
+ uid=session.get('uid'); aid=session.get('association_id') if session.get('account_type')=='association' else None
+ if not uid and not aid: return redirect('/login')
+ c=db(); superv=_is_super(c,uid)
+ if request.method=='POST':
+  title=clean(request.form.get('title')); desc=clean(request.form.get('description')); cat=clean(request.form.get('category')) or 'Amélioration'; now=datetime.now().isoformat(timespec='minutes')
+  if title and desc: c.execute("INSERT INTO app_suggestions(author_user_id,author_association_id,title,description,category,status,created_at,updated_at) VALUES(?,?,?,?,?,'Nouvelle',?,?)",(uid,aid,title,desc,cat,now,now)); c.commit(); flash('Suggestion envoyée.')
+  return redirect('/suggestions')
+ if superv: rows=c.execute("SELECT * FROM app_suggestions ORDER BY id DESC").fetchall()
+ elif aid: rows=c.execute("SELECT * FROM app_suggestions WHERE author_association_id=? ORDER BY id DESC",(aid,)).fetchall()
+ else: rows=c.execute("SELECT * FROM app_suggestions WHERE author_user_id=? ORDER BY id DESC",(uid,)).fetchall()
+ c.close(); return page('Suggestions',"""<div class='section-title'><h2>💡 Suggestions</h2></div>{% if not superv %}<div class='card'><form method='post'><label>Titre<input name='title' required></label><label>Catégorie<select name='category'><option>Amélioration</option><option>Nouvelle fonctionnalité</option><option>Problème rencontré</option><option>Ergonomie</option><option>Autre</option></select></label><label>Description<textarea name='description' required></textarea></label><button class='btn'>Envoyer la suggestion</button></form></div>{% endif %}<div class='card'><h3>{{'Toutes les suggestions' if superv else 'Mes suggestions'}}</h3>{% for x in rows %}<p><b>{{x.title}}</b> · {{x.status}}<br>{{x.description}}<br><span class='sub'>{{x.category}} · {{x.created_at}}</span></p>{% else %}<p class='sub'>Aucune suggestion.</p>{% endfor %}</div>""",rows=rows,superv=superv)
+
+@app.get('/api/v1/messages')
+@android_auth
+def android_messages_list():
+ c=db(); uid=request.android_uid; superv=_is_super(c,uid)
+ if superv: rows=c.execute("SELECT t.id,t.subject,t.updated_at,(SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t ORDER BY t.updated_at DESC LIMIT 200").fetchall()
+ else: rows=c.execute("SELECT t.id,t.subject,t.updated_at,(SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.user_id=? GROUP BY t.id ORDER BY t.updated_at DESC LIMIT 100",(uid,)).fetchall()
+ c.close(); return jsonify({'conversations':[dict(x) for x in rows],'supervision':superv})
+
+@app.post('/api/v1/messages')
+@android_auth
+def android_message_create():
+ body=request.get_json(silent=True) or {}; uid=request.android_uid; target_type=clean(body.get('target_type')); target_id=int(body.get('target_id') or 0); text=clean(body.get('body')); subject=clean(body.get('subject')) or 'Conversation'; c=db()
+ if not text: c.close(); return jsonify({'error':{'message':'Message obligatoire'}}),400
+ u=c.execute("SELECT role FROM users WHERE id=?",(uid,)).fetchone(); superv=bool(u and u['role']=='super_admin'); now=datetime.now().isoformat(timespec='minutes')
+ allowed=False
+ if target_type=='super_admin': allowed=True
+ elif target_type=='association': allowed=superv or bool(c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(target_id,uid)).fetchone())
+ elif target_type=='user': allowed=superv
+ if not allowed: c.close(); return jsonify({'error':{'message':'Destinataire non autorisé'}}),403
+ cur=c.execute("INSERT INTO message_threads(subject,created_by_user_id,created_at,updated_at) VALUES(?,?,?,?)",(subject,uid,now,now)); tid=cur.lastrowid; c.execute("INSERT INTO message_participants(thread_id,user_id,participant_type,last_read_at) VALUES(?,?,'user',?)",(tid,uid,now))
+ if target_type=='super_admin':
+  for x in c.execute("SELECT id FROM users WHERE role='super_admin' AND active=1").fetchall(): c.execute("INSERT OR IGNORE INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,x['id']))
+ elif target_type=='association': c.execute("INSERT INTO message_participants(thread_id,association_id,participant_type) VALUES(?,?,'association')",(tid,target_id))
+ else: c.execute("INSERT INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,target_id))
+ c.execute("INSERT INTO messages(thread_id,sender_user_id,body,created_at) VALUES(?,?,?,?)",(tid,uid,text,now)); c.commit(); c.close(); return jsonify({'ok':True,'thread_id':tid}),201
+
+@app.route('/api/v1/suggestions',methods=['GET','POST'])
+@android_auth
+def android_suggestions():
+ c=db(); uid=request.android_uid; superv=_is_super(c,uid)
+ if request.method=='POST':
+  body=request.get_json(silent=True) or {}; title=clean(body.get('title')); desc=clean(body.get('description')); cat=clean(body.get('category')) or 'Amélioration'
+  if not title or not desc: c.close(); return jsonify({'error':{'message':'Titre et description obligatoires'}}),400
+  now=datetime.now().isoformat(timespec='minutes'); c.execute("INSERT INTO app_suggestions(author_user_id,title,description,category,status,created_at,updated_at) VALUES(?,?,?,?, 'Nouvelle',?,?)",(uid,title,desc,cat,now,now)); c.commit()
+ rows=c.execute("SELECT id,title,description,category,status,admin_response,created_at FROM app_suggestions "+("" if superv else "WHERE author_user_id=? ")+"ORDER BY id DESC LIMIT 200",() if superv else (uid,)).fetchall(); c.close(); return jsonify({'suggestions':[dict(x) for x in rows],'supervision':superv})
+
 @app.get('/api/v1/app-version')
 def android_app_version():
  latest=os.environ.get('MYTREE_ANDROID_LATEST_VERSION','0.1-alpha1-lot12-rc7')
@@ -4875,7 +4978,7 @@ def association_account_dashboard():
  c=db(); a=c.execute("SELECT * FROM associations WHERE id=? AND status='active'",(aid,)).fetchone()
  if not a: c.close(); session.clear(); return redirect('/login?account_type=association')
  counts={'members':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='approved'",(aid,)).fetchone()['n'],'pending':c.execute("SELECT COUNT(*) n FROM association_memberships WHERE association_id=? AND status='pending'",(aid,)).fetchone()['n'],'projects':c.execute("SELECT COUNT(*) n FROM projects WHERE association_id=? AND active=1",(aid,)).fetchone()['n'],'trees':c.execute("SELECT COUNT(*) n FROM trees WHERE association_id=? AND active=1",(aid,)).fetchone()['n']}; c.close()
- return page('Association',"""<div class='section-title'><div><h2>🏛 {{a.name}}</h2><p class='sub'>Espace Association · {{a.code}}</p></div></div><div class='grid kpis'><a class='card kpi' href='/membership-requests'><small>Membres</small><b>{{counts.members}}</b><span>{{counts.pending}} demande(s)</span></a><a class='card kpi' href='/projects'><small>Projets</small><b>{{counts.projects}}</b></a><a class='card kpi' href='/trees'><small>Arbres</small><b>{{counts.trees}}</b></a></div><div class='card'><h3>Gestion de l’association</h3><div class='action-set'><a class='btn' href='/membership-requests'>Adhérents & rôles</a><a class='btn' href='/donations'>Dons</a><a class='btn' href='/projects'>Projets</a><a class='btn' href='/zones'>Zones</a><a class='btn' href='/nursery'>Stock / Pépinière</a><a class='btn' href='/equipment'>Inventaire matériel</a><a class='btn' href='/reports/operations'>Finances & rapports</a><a class='btn alt' href='/public/associations/{{a.id}}'>Fiche publique</a></div></div>""",a=a,counts=counts)
+ return page('Association',"""<div class='section-title'><div><h2>🏛 {{a.name}}</h2><p class='sub'>Espace Association · {{a.code}}</p></div></div><div class='grid kpis'><a class='card kpi' href='/membership-requests'><small>Membres</small><b>{{counts.members}}</b><span>{{counts.pending}} demande(s)</span></a><a class='card kpi' href='/projects'><small>Projets</small><b>{{counts.projects}}</b></a><a class='card kpi' href='/trees'><small>Arbres</small><b>{{counts.trees}}</b></a></div><div class='card'><h3>Gestion de l’association</h3><div class='action-set'><a class='btn' href='/membership-requests'>Adhérents & rôles</a><a class='btn' href='/donations'>Dons</a><a class='btn' href='/projects'>Projets</a><a class='btn' href='/zones'>Zones</a><a class='btn' href='/nursery'>Stock / Pépinière</a><a class='btn' href='/equipment'>Inventaire matériel</a><a class='btn' href='/reports/operations'>Finances & rapports</a><a class='btn' href='/messages'>💬 Messagerie</a><a class='btn' href='/suggestions'>💡 Suggestions</a><a class='btn alt' href='/public/associations/{{a.id}}'>Fiche publique</a></div></div>""",a=a,counts=counts)
 
 @app.post('/api/v1/auth/association-login')
 def android_association_login():
