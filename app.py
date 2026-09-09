@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.17.2 — Boutons Messagerie & Suggestions Web'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.3 — Parité complète navigation Web PC / téléphone'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -733,6 +733,29 @@ STYLE += '''<style id="rc16172-web-messaging-suggestions-nav">
 }
 </style>'''
 
+STYLE += '''<style id="rc16173-full-web-mobile-parity">
+.mobile-full-menu{display:none}
+@media(max-width:700px){
+ .layout{padding-bottom:76px!important}
+ main{padding-bottom:84px!important}
+ .mobile-connected-nav.rc16173-mobile-nav{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;min-height:64px!important;height:auto!important;padding:4px 4px max(4px,env(safe-area-inset-bottom))!important;gap:2px!important}
+ .mobile-connected-nav.rc16173-mobile-nav a,.mobile-connected-nav.rc16173-mobile-nav button{border:0;background:transparent;color:#fff;text-decoration:none;text-align:center;font-size:10px;padding:5px 2px;border-radius:8px;min-width:0;min-height:54px;display:flex!important;flex-direction:column;align-items:center;justify-content:center;font-family:inherit}
+ .mobile-connected-nav.rc16173-mobile-nav a span,.mobile-connected-nav.rc16173-mobile-nav button span{display:block;font-size:21px;line-height:23px}
+ .mobile-connected-nav.rc16173-mobile-nav a.active{background:#2e7b47}
+ .mobile-full-menu{position:fixed;inset:0;z-index:1700;background:rgba(8,25,16,.55);padding:0;align-items:flex-end;justify-content:center}
+ .mobile-full-menu.open{display:flex}
+ .mobile-full-menu-panel{width:100%;max-height:91vh;background:#f3f6f1;border-radius:20px 20px 0 0;box-shadow:0 -8px 36px rgba(0,0,0,.24);display:flex;flex-direction:column}
+ .mobile-full-menu-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#102b1c;color:#fff;border-radius:20px 20px 0 0;position:sticky;top:0;z-index:2}
+ .mobile-full-menu-head b{font-size:18px}.mobile-full-menu-head button{width:44px;height:44px;border:0;border-radius:10px;background:#fff;color:#102b1c;font-size:20px}
+ .mobile-full-menu-scroll{padding:12px 12px max(20px,env(safe-area-inset-bottom));overflow-y:auto;-webkit-overflow-scrolling:touch}
+ .mobile-full-menu section{margin-bottom:15px}.mobile-full-menu h3{margin:0 0 8px;font-size:13px;color:#4e6355;text-transform:uppercase;letter-spacing:.03em}
+ .mobile-full-menu-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ .mobile-full-menu-grid a{min-height:72px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:5px;padding:8px;border:1px solid var(--line);border-radius:13px;background:#fff;color:var(--text);text-decoration:none;font-size:13px}
+ .mobile-full-menu-grid a span{font-size:24px}.mobile-full-menu-grid a b{font-size:12px;line-height:1.2}
+ body.mobile-menu-open{overflow:hidden}
+}
+</style>'''
+
 ACTION_UI_SCRIPT='''<script>
 (function(){
  function decorate(){
@@ -802,35 +825,84 @@ html[dir="rtl"] .smart-list-search{direction:rtl;text-align:right}
 @media(max-width:700px){html[dir="rtl"] .header-actions,html[dir="rtl"] .mobile-title-row{direction:rtl}html[dir="rtl"] .form label{text-align:right}}
 </style>'''
 
+def _mobile_menu_link(href, icon, label, perm=None):
+ if perm and not has_permission(perm): return ''
+ return f'<a href="{href}"><span>{icon}</span><b>{tr(label)}</b></a>'
+
+
+def mobile_full_menu():
+ ctx=active_context()
+ if is_super_admin() and ctx.get('type')!='association':
+  groups=[
+   ('🌳 Terrain',[
+    ('/trees','🌳','Arbres'),('/plantings/pending','🌱','Plantations'),('/watering','💧','Arrosages'),('/map','🗺','Carte'),('/volunteer/gps-quick','📍','GPS rapide'),('/qr','▣','QR Code')]),
+   ('📂 Organisation',[
+    ('/projects','📁','Projets'),('/zones','📍','Zones'),('/teams','👥','Équipes'),('/missions','🎯','Missions'),('/operations','🗓','Planifications'),('/events','📆','Événements')]),
+   ('🏛 Multi-associations',[
+    ('/admin/associations','🏛','Associations'),('/association-requests','📨','Demandes associations'),('/membership-requests','🤝','Demandes adhésion'),('/admin/registration-settings','⚙️','Inscriptions')]),
+   ('👥 Personnes',[
+    ('/volunteers','🙋','Bénévoles'),('/members','🪪','Adhérents'),('/users','🔐','Utilisateurs'),('/roles','🛡','Rôles et droits')]),
+   ('💰 Gestion',[
+    ('/cash','💰','Caisse'),('/donations','🎁','Dons'),('/members','🤝','Cotisations'),('/stock','📦','Stock')]),
+   ('💬 Communication',[
+    ('/messages','💬','Messagerie'),('/suggestions','💡','Suggestions')]),
+   ('📊 Administration',[
+    ('/action-center','✅','Centre d’actions'),('/notifications','🔔','Notifications'),('/reports/operations','📊','Rapports'),('/activity','🕘','Journal d’activité'),('/backup','💾','Sauvegarde'),('/species','🍃','Espèces'),('/geography','📍','Géographie'),('/search','🔎','Recherche')]),
+  ]
+ elif ctx.get('type')=='association':
+  role=ctx.get('role_code'); assoc_admin=role in ('association_admin','admin')
+  groups=[
+   ('🏛 Association',[
+    ('/association','🏠','Accueil association',None),('/map','🗺','Carte','map.view'),('/volunteer/trees','🌳','Arbres','tree.view'),('/projects','📁','Projets','project.read'),('/zones','📍','Zones','zone.read'),('/missions','🎯','Missions','mission.view'),('/events','📆','Événements','event.view'),('/teams','👥','Équipes','team.view')]),
+   ('👥 Membres & collaboration',[
+    ('/membership-requests','👥','Demandes membres',None if assoc_admin else '__skip__'),('/collaborations','🤝','Collaborations',None if assoc_admin else '__skip__')]),
+   ('💬 Communication',[
+    ('/messages','💬','Messagerie',None),('/suggestions','💡','Suggestions',None),('/notifications','🔔','Notifications','notification.view')]),
+  ]
+ else:
+  groups=[
+   ('👤 Mon espace',[
+    ('/volunteer','🏠','Accueil',None),('/volunteer/field','🚜','Mode Terrain',None),('/volunteer/trees','🌳','Mes arbres','tree.view'),('/volunteer/trees/no-gps','📍','Arbres sans GPS','tree.view'),('/volunteer/gps-quick','⚡','GPS rapide','tree.view'),('/planting/new','🌱','Planter','tree.create'),('/volunteer/watering','💧','Arroser','watering.view'),('/volunteer/scan','▣','Scanner QR','tree.view'),('/map','🗺','Carte','map.view')]),
+   ('🤝 Vie associative',[
+    ('/volunteer/donate','🎁','Faire un don',None),('/my-associations','🏛','Mes associations',None),('/volunteer/events','📆','Événements','event.view'),('/volunteer/missions','📋','Missions','mission.view'),('/interventions','🛠','Interventions','intervention.view'),('/volunteer/team','👥','Mon équipe','team.view')]),
+   ('💬 Communication & compte',[
+    ('/messages','💬','Messagerie',None),('/suggestions','💡','Suggestions',None),('/notifications','🔔','Alertes','notification.view'),('/volunteer/profile','👤','Profil',None)]),
+  ]
+ html='<div id="mobileFullMenu" class="mobile-full-menu" aria-hidden="true"><div class="mobile-full-menu-panel"><div class="mobile-full-menu-head"><b>☰ '+tr('Menu')+'</b><button type="button" onclick="toggleMobileFullMenu(false)" aria-label="Fermer">✕</button></div><div class="mobile-full-menu-scroll">'
+ for title,items in groups:
+  links=''
+  for item in items:
+   href,icon,label=item[:3]; perm=item[3] if len(item)>3 else None
+   if perm=='__skip__': continue
+   links+=_mobile_menu_link(href,icon,label,perm)
+  if links: html+=f'<section><h3>{title}</h3><div class="mobile-full-menu-grid">{links}</div></section>'
+ html+='</div></div></div>'
+ return html
+
+
 def connected_mobile_nav():
  ctx=active_context()
  if ctx.get('type')=='association':
-  items=[
-   ('/association','🏠','Accueil',None),
-   ('/map','🗺','Carte','map.view'),
-   ('/volunteer/trees','🌳','Arbres','tree.view'),
-   ('/messages','💬','Messages',None),
-   ('/suggestions','💡','Suggestions',None),
-   ('/missions','🎯','Missions','mission.view'),
-   ('/notifications','🔔','Alertes','notification.view'),
-  ]
+  home='/association'
  else:
-  items=[
-   ('/' if is_admin() else '/volunteer','🏠','Accueil',None),
-   ('/map','🗺','Carte','map.view'),
-   ('/admin/associations' if is_super_admin() else '/my-associations','🏛','Associations',None),
-   ('/messages','💬','Messages',None),
-   ('/suggestions','💡','Suggestions',None),
-   ('/notifications','🔔','Alertes','notification.view'),
-   ('/missions' if is_admin() else '/volunteer/missions','🎯','Missions','mission.view'),
-   ('/trees' if is_admin() else '/volunteer/field','🌳','Terrain','tree.view'),
-  ]
- out='<nav class="mobile-connected-nav" aria-label="Navigation mobile">'
- for href,icon,label,perm in items:
-  if perm and not has_permission(perm): continue
+  home='/' if is_admin() else '/volunteer'
+ items=[(home,'🏠','Accueil'),('/map','🗺','Carte'),('/notifications','🔔','Alertes')]
+ out='<nav class="mobile-connected-nav rc16173-mobile-nav" aria-label="Navigation mobile">'
+ for href,icon,label in items:
   active=' active' if request.path==href or (href!='/' and request.path.startswith(href+'/')) else ''
   out+=f'<a class="{active.strip()}" href="{href}"><span>{icon}</span>{tr(label)}</a>'
- return out+'</nav>'
+ out+='<button type="button" onclick="toggleMobileFullMenu(true)" aria-label="'+tr('Menu')+'"><span>☰</span>'+tr('Menu')+'</button></nav>'
+ out+=mobile_full_menu()
+ out+='''<script id="rc16173-mobile-menu-script">
+function toggleMobileFullMenu(open){
+ const el=document.getElementById('mobileFullMenu'); if(!el)return;
+ el.classList.toggle('open',!!open); el.setAttribute('aria-hidden',open?'false':'true');
+ document.body.classList.toggle('mobile-menu-open',!!open);
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleMobileFullMenu(false)});
+document.addEventListener('click',e=>{const el=document.getElementById('mobileFullMenu');if(el&&e.target===el)toggleMobileFullMenu(false)});
+</script>'''
+ return out
 
 
 LOT9_UX_SCRIPT='''<script id="mytree-lot9-ux">
