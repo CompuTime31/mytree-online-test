@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.17.3 — Parité complète navigation Web PC / téléphone'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.4 — Tableau de bord Web téléphone style Android'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -1143,6 +1143,25 @@ FIXED7_STYLE='''<style id="fixed7-profile-switch">
 @media(max-width:700px){.active-profile-identity{grid-column:1/-1;width:100%;box-sizing:border-box}.association-profile-hero{align-items:flex-start}.association-avatar{width:54px;height:54px;font-size:34px;flex:0 0 auto}}
 </style>'''
 
+
+RC16174_STYLE='''<style id="rc16174-mobile-dashboard">
+@media(max-width:700px){
+  .rc16174-dashboard{display:block;margin:-2px 0 8px}
+  .rc16174-hello{background:linear-gradient(135deg,#eef7f1,#f8fbf8);border:1px solid #dfe9e1;border-radius:18px;padding:16px 16px 14px;margin-bottom:14px}
+  .rc16174-hello h2{font-size:27px;margin:0 0 5px;color:#1f3127}.rc16174-hello .sub{font-size:14px}
+  .rc16174-tabs{display:grid;grid-template-columns:1fr 1fr;border:1px solid #cad8cd;border-radius:17px;overflow:hidden;background:#fff;margin-bottom:14px}
+  .rc16174-tab{display:flex;align-items:center;justify-content:center;gap:7px;text-align:center;min-height:72px;padding:10px;text-decoration:none;color:#26372d;font-weight:800;font-size:16px}
+  .rc16174-tab.active{background:linear-gradient(135deg,#2f9b50,#2e7b47);color:#fff}
+  .rc16174-kpis{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:10px!important;margin:0 0 14px!important}
+  .rc16174-kpi{min-width:0;min-height:142px;border-radius:17px!important;padding:13px 11px!important;margin:0!important;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;overflow:hidden!important;text-decoration:none!important;box-shadow:0 4px 14px rgba(16,43,28,.035)}
+  .rc16174-kpi .emoji{font-size:31px;line-height:1;margin-bottom:8px}.rc16174-kpi b{font-size:31px!important;line-height:1;margin:0 0 8px!important}.rc16174-kpi .label{font-size:14px;font-weight:700;line-height:1.15;color:#26372d}.rc16174-kpi .chev{margin-left:auto;margin-top:auto;font-size:20px;color:#438861}
+  .rc16174-kpi.green{background:#f0f7f2}.rc16174-kpi.blue{background:#edf6fc}.rc16174-kpi.amber{background:#fff7ed}.rc16174-kpi.rose{background:#fbf1f1}
+  .rc16174-quote{display:flex;align-items:center;gap:12px;background:#eef7f1;border:1px solid #dce9df;border-radius:16px;padding:14px 16px;color:#29613c;font-weight:700;margin-bottom:12px}
+  .rc16174-quote .leaf{font-size:27px}.rc16174-desktop{display:none!important}
+}
+@media(min-width:701px){.rc16174-mobile{display:none!important}}
+</style>'''
+
 def page(title,body,**ctx):
  content=render_template_string(body,tr=tr,lang=current_lang(),**ctx)
  if session.get('uid'):
@@ -1163,7 +1182,7 @@ def page(title,body,**ctx):
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
   ident=profile_identity()
   identity_html='<div class="active-profile-identity '+ident['type']+'"><b>'+ident['name']+'</b><small>'+ident['subtitle']+'</small></div>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+identity_html+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+RC16174_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+identity_html+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
   return render_template_string(tpl,content=content)
  return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main>'+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>',content=content)
 
@@ -2992,7 +3011,49 @@ def volunteer_dashboard():
  unread=c.execute("SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0",(uid,)).fetchone()['n']
  recent_missions=c.execute("SELECT m.*,z.name zone_name FROM mission_participants mp JOIN missions m ON m.id=mp.mission_id LEFT JOIN zones z ON z.id=m.zone_id WHERE mp.user_id=? AND m.active=1 ORDER BY COALESCE(m.start_at,m.created_at) DESC LIMIT 5",(uid,)).fetchall()
  priority=c.execute("SELECT t.id,t.tree_code,t.watering_status,t.health_status,s.name_fr species_name,z.name zone_name FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN zones z ON z.id=t.zone_id WHERE t.active=1 AND t.approval_status='approved' AND (t.planted_by_user_id=? OR t.zone_id IN (SELECT zone_id FROM assignments WHERE user_id=? AND active=1)) AND (t.watering_status IN ('À arroser','Urgent') OR t.health_status IN ('À surveiller','En danger')) ORDER BY CASE t.watering_status WHEN 'Urgent' THEN 0 WHEN 'À arroser' THEN 1 ELSE 2 END LIMIT 8",(uid,uid)).fetchall()
+ # RC16.17.4 — données du tableau de bord mobile, avec bascule Personnel / Global.
+ mobile_scope='global' if request.args.get('scope')=='global' else 'personal'
+ if mobile_scope=='global':
+  mobile_trees=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved'").fetchone()['n']
+  mobile_water=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND watering_status IN ('À arroser','Urgent')").fetchone()['n']
+  mobile_watch=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND health_status IN ('À surveiller','En danger')").fetchone()['n']
+  mobile_health=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND health_status IN ('Bon','Bonne santé')").fetchone()['n']
+  mobile_interventions=c.execute("SELECT COUNT(*) n FROM interventions").fetchone()['n']
+  mobile_missions=c.execute("SELECT COUNT(*) n FROM missions WHERE active=1 AND status IN ('Planifiée','En cours')").fetchone()['n']
+  mobile_species=c.execute("SELECT COUNT(*) n FROM species WHERE active=1").fetchone()['n']
+  mobile_volunteers=c.execute("SELECT COUNT(*) n FROM users WHERE active=1").fetchone()['n']
+  mobile_alerts=c.execute("SELECT COUNT(*) n FROM notifications WHERE is_read=0").fetchone()['n']
+  tree_base='/trees?approval_status=approved'
+ else:
+  mobile_trees=my_trees
+  mobile_water=need_water
+  mobile_watch=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND planted_by_user_id=? AND approval_status='approved' AND health_status IN ('À surveiller','En danger')",(uid,)).fetchone()['n']
+  mobile_health=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND planted_by_user_id=? AND approval_status='approved' AND health_status IN ('Bon','Bonne santé')",(uid,)).fetchone()['n']
+  mobile_interventions=c.execute("SELECT COUNT(*) n FROM interventions WHERE user_id=?",(uid,)).fetchone()['n']
+  mobile_missions=missions
+  mobile_species=c.execute("SELECT COUNT(*) n FROM species WHERE active=1").fetchone()['n']
+  mobile_volunteers=0
+  mobile_alerts=unread
+  tree_base='/volunteer/trees?view=mine'
  c.close()
+ ua=(request.headers.get('User-Agent') or '').lower(); mobile_web=any(x in ua for x in ('iphone','android','mobile'))
+ if mobile_web:
+  return page('Accueil bénévole',r'''<div class="rc16174-dashboard rc16174-mobile">
+   <section class="rc16174-hello"><h2>Bonjour {{session.get('name')}} 👋</h2><div class="sub">Personnel · volunteer</div></section>
+   <nav class="rc16174-tabs" aria-label="Portée du tableau de bord"><a class="rc16174-tab {{'active' if mobile_scope=='personal' else ''}}" href="/volunteer?scope=personal">👤 Mon tableau<br>de bord</a><a class="rc16174-tab {{'active' if mobile_scope=='global' else ''}}" href="/volunteer?scope=global">🌐 Tableau de bord<br>global</a></nav>
+   <div class="rc16174-kpis">
+    <a class="card rc16174-kpi green" href="{{tree_base}}"><span class="emoji">🌳</span><b>{{mobile_trees}}</b><span class="label">{{'Arbres' if mobile_scope=='global' else 'Mes arbres'}}</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi blue" href="{{'/trees?quick=watering' if mobile_scope=='global' else '/volunteer/watering'}}"><span class="emoji">💧</span><b>{{mobile_water}}</b><span class="label">À arroser</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi amber" href="{{'/trees?health_status=À surveiller' if mobile_scope=='global' else '/trees?quick=mine&health_status=À surveiller'}}"><span class="emoji">⚠️</span><b>{{mobile_watch}}</b><span class="label">À surveiller</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi rose" href="/interventions"><span class="emoji">🛠️</span><b>{{mobile_interventions}}</b><span class="label">Interventions</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi green" href="{{'/trees?health_status=Bon' if mobile_scope=='global' else '/trees?quick=mine&health_status=Bon'}}"><span class="emoji">✅</span><b>{{mobile_health}}</b><span class="label">Bonne santé</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi rose" href="/notifications"><span class="emoji">🔔</span><b>{{mobile_alerts}}</b><span class="label">Alertes</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi rose" href="{{'/missions' if mobile_scope=='global' else '/volunteer/missions'}}"><span class="emoji">🎯</span><b>{{mobile_missions}}</b><span class="label">Missions</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi green" href="/species"><span class="emoji">🌿</span><b>{{mobile_species}}</b><span class="label">Espèces</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi blue" href="{{'/volunteers' if mobile_scope=='global' else '/volunteer/team'}}"><span class="emoji">👥</span><b>{{mobile_volunteers}}</b><span class="label">Bénévoles</span><span class="chev">›</span></a>
+   </div>
+   <div class="rc16174-quote"><span class="leaf">🌱</span><span>« Chaque arbre compte, ensemble faisons la différence. »</span></div>
+  </div>''',mobile_scope=mobile_scope,tree_base=tree_base,mobile_trees=mobile_trees,mobile_water=mobile_water,mobile_watch=mobile_watch,mobile_health=mobile_health,mobile_interventions=mobile_interventions,mobile_missions=mobile_missions,mobile_species=mobile_species,mobile_volunteers=mobile_volunteers,mobile_alerts=mobile_alerts)
  ctx=active_context(); return page('Accueil bénévole',"""<div class="vol-hero"><div class="sub" style="color:#d6e9dc">Espace bénévole privé</div><h2 style="margin:5px 0">Bonjour {{session.get('name')}} 👋</h2><div>{{my_trees}} arbre(s) suivi(s) • {{need_water}} à arroser • {{unread}} notification(s)</div></div><div class="card volunteer-association-actions"><h3>🏛 Associations</h3><div class="association-mobile-actions"><a class="btn" href="/public/associations">🏛 Consulter les associations</a><a class="btn alt" href="/association-request/new">➕ Créer une association</a></div></div><div class="vertical-actions volunteer-home-actions"><a class="vertical-action rc16172-new" href="/messages"><span class="icon">💬</span><span>Messagerie</span></a><a class="vertical-action rc16172-new" href="/suggestions"><span class="icon">💡</span><span>Suggestions</span></a><a class="vertical-action" href="/volunteer/trees"><span class="icon">🌳</span><span>Mes arbres</span></a><a class="vertical-action" href="/volunteer/gps-quick"><span class="icon">📍</span><span>Position GPS rapide</span></a><a class="vertical-action" href="/planting/new"><span class="icon">🌱</span><span>Planter un arbre</span></a><a class="vertical-action" href="/volunteer/watering"><span class="icon">💧</span><span>Arroser</span></a><a class="vertical-action" href="/volunteer/scan"><span class="icon">📷</span><span>Scanner un QR code</span></a><a class="vertical-action" href="/map"><span class="icon">🗺️</span><span>Carte</span></a><a class="vertical-action" href="/volunteer/donate"><span class="icon">🎁</span><span>Faire un don</span></a><a class="vertical-action" href="/volunteer/events"><span class="icon">📆</span><span>Événements</span></a>{% if can_missions %}<a class="vertical-action" href="/volunteer/missions"><span class="icon">📋</span><span>Mes missions</span></a>{% endif %}{% if can_interventions %}<a class="vertical-action" href="/interventions"><span class="icon">🛠</span><span>Interventions</span></a>{% endif %}{% if can_team %}<a class="vertical-action" href="/volunteer/team"><span class="icon">👥</span><span>Mon équipe</span></a>{% endif %}<a class="vertical-action" href="/notifications"><span class="icon">🔔</span><span>Notifications</span></a><a class="vertical-action" href="/volunteer/profile"><span class="icon">👤</span><span>Mon profil</span></a></div><div class="card desktop-dashboard-details" style="margin-top:16px"><h3>Priorités terrain</h3><table><tr><th>Arbre</th><th>Zone</th><th>État</th><th></th></tr>{% for t in priority %}<tr><td>{{t.tree_code or 'En attente'}}<div class="sub">{{t.species_name}}</div></td><td>{{t.zone_name or '—'}}</td><td>{{t.watering_status}} / {{t.health_status}}</td><td><a class="btn alt" href="/tree/{{t.id}}">Ouvrir</a></td></tr>{% else %}<tr><td colspan="4">Aucune priorité actuellement.</td></tr>{% endfor %}</table></div><div class="bottom-space"></div>""",missions=missions,my_trees=my_trees,need_water=need_water,unread=unread,priority=priority,recent_missions=recent_missions,can_missions=can_missions,can_interventions=can_interventions,can_team=can_team)
 
 @app.route('/volunteer/missions')
