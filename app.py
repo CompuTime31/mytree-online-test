@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.17.6 — Carte Web téléphone — Ma carte visible'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.7 — Dashboard KPI Navigation Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -3038,7 +3038,7 @@ def volunteer_dashboard():
  unread=c.execute("SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0",(uid,)).fetchone()['n']
  recent_missions=c.execute("SELECT m.*,z.name zone_name FROM mission_participants mp JOIN missions m ON m.id=mp.mission_id LEFT JOIN zones z ON z.id=m.zone_id WHERE mp.user_id=? AND m.active=1 ORDER BY COALESCE(m.start_at,m.created_at) DESC LIMIT 5",(uid,)).fetchall()
  priority=c.execute("SELECT t.id,t.tree_code,t.watering_status,t.health_status,s.name_fr species_name,z.name zone_name FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN zones z ON z.id=t.zone_id WHERE t.active=1 AND t.approval_status='approved' AND (t.planted_by_user_id=? OR t.zone_id IN (SELECT zone_id FROM assignments WHERE user_id=? AND active=1)) AND (t.watering_status IN ('À arroser','Urgent') OR t.health_status IN ('À surveiller','En danger')) ORDER BY CASE t.watering_status WHEN 'Urgent' THEN 0 WHEN 'À arroser' THEN 1 ELSE 2 END LIMIT 8",(uid,uid)).fetchall()
- # RC16.17.5 — données du tableau de bord mobile, avec bascule Personnel / Global.
+ # RC16.17.7 — KPI mobile : le compteur et la destination utilisent exactement le même périmètre.
  mobile_scope='global' if request.args.get('scope')=='global' else 'personal'
  if mobile_scope=='global':
   mobile_trees=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved'").fetchone()['n']
@@ -3048,20 +3048,19 @@ def volunteer_dashboard():
   mobile_interventions=c.execute("SELECT COUNT(*) n FROM interventions").fetchone()['n']
   mobile_missions=c.execute("SELECT COUNT(*) n FROM missions WHERE active=1 AND status IN ('Planifiée','En cours')").fetchone()['n']
   mobile_species=c.execute("SELECT COUNT(*) n FROM species WHERE active=1").fetchone()['n']
-  mobile_volunteers=c.execute("SELECT COUNT(*) n FROM users WHERE active=1").fetchone()['n']
+  mobile_volunteers=c.execute("""SELECT COUNT(*) n FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.active=1 AND (r.name='volunteer' OR (r.name IS NULL AND u.role='volunteer'))""").fetchone()['n']
   mobile_alerts=c.execute("SELECT COUNT(*) n FROM notifications WHERE is_read=0").fetchone()['n']
-  tree_base='/trees?approval_status=approved'
  else:
-  mobile_trees=my_trees
-  mobile_water=need_water
-  mobile_watch=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND planted_by_user_id=? AND approval_status='approved' AND health_status IN ('À surveiller','En danger')",(uid,)).fetchone()['n']
-  mobile_health=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND planted_by_user_id=? AND approval_status='approved' AND health_status IN ('Bon','Bonne santé')",(uid,)).fetchone()['n']
+  mobile_trees=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND planted_by_user_id=?",(uid,)).fetchone()['n']
+  mobile_water=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND planted_by_user_id=? AND watering_status IN ('À arroser','Urgent')",(uid,)).fetchone()['n']
+  mobile_watch=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND planted_by_user_id=? AND health_status IN ('À surveiller','En danger')",(uid,)).fetchone()['n']
+  mobile_health=c.execute("SELECT COUNT(*) n FROM trees WHERE active=1 AND approval_status='approved' AND planted_by_user_id=? AND health_status IN ('Bon','Bonne santé')",(uid,)).fetchone()['n']
   mobile_interventions=c.execute("SELECT COUNT(*) n FROM interventions WHERE user_id=?",(uid,)).fetchone()['n']
-  mobile_missions=missions
+  mobile_missions=c.execute("SELECT COUNT(*) n FROM mission_participants mp JOIN missions m ON m.id=mp.mission_id WHERE mp.user_id=? AND m.active=1 AND m.status IN ('Planifiée','En cours')",(uid,)).fetchone()['n']
   mobile_species=c.execute("SELECT COUNT(*) n FROM species WHERE active=1").fetchone()['n']
-  mobile_volunteers=0
-  mobile_alerts=unread
-  tree_base='/volunteer/trees?view=mine'
+  team_id=c.execute("SELECT team_id FROM users WHERE id=?",(uid,)).fetchone()['team_id']
+  mobile_volunteers=c.execute("SELECT COUNT(*) n FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? AND u.active=1",(team_id,)).fetchone()['n'] if team_id else 0
+  mobile_alerts=c.execute("SELECT COUNT(*) n FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0",(uid,)).fetchone()['n']
  c.close()
  ua=(request.headers.get('User-Agent') or '').lower(); mobile_web=any(x in ua for x in ('iphone','android','mobile'))
  if mobile_web:
@@ -3069,19 +3068,79 @@ def volunteer_dashboard():
    <section class="rc16174-hello"><h2>Bonjour {{session.get('name')}} 👋</h2><div class="sub">Personnel · volunteer</div></section>
    <nav class="rc16174-tabs" aria-label="Portée du tableau de bord"><a class="rc16174-tab {{'active' if mobile_scope=='personal' else ''}}" href="/volunteer?scope=personal">👤 Mon tableau<br>de bord</a><a class="rc16174-tab {{'active' if mobile_scope=='global' else ''}}" href="/volunteer?scope=global">🌐 Tableau de bord<br>global</a></nav>
    <div class="rc16174-kpis">
-    <a class="card rc16174-kpi green" href="{{tree_base}}"><span class="emoji">🌳</span><b>{{mobile_trees}}</b><span class="label">{{'Arbres' if mobile_scope=='global' else 'Mes arbres'}}</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi blue" href="{{'/trees?quick=watering' if mobile_scope=='global' else '/volunteer/watering'}}"><span class="emoji">💧</span><b>{{mobile_water}}</b><span class="label">À arroser</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi amber" href="{{'/trees?health_status=À surveiller' if mobile_scope=='global' else '/trees?quick=mine&health_status=À surveiller'}}"><span class="emoji">⚠️</span><b>{{mobile_watch}}</b><span class="label">À surveiller</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi rose" href="/interventions"><span class="emoji">🛠️</span><b>{{mobile_interventions}}</b><span class="label">Interventions</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi green" href="{{'/trees?health_status=Bon' if mobile_scope=='global' else '/trees?quick=mine&health_status=Bon'}}"><span class="emoji">✅</span><b>{{mobile_health}}</b><span class="label">Bonne santé</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi rose" href="/notifications"><span class="emoji">🔔</span><b>{{mobile_alerts}}</b><span class="label">Alertes</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi rose" href="{{'/missions' if mobile_scope=='global' else '/volunteer/missions'}}"><span class="emoji">🎯</span><b>{{mobile_missions}}</b><span class="label">Missions</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi green" href="/volunteer/dashboard/trees?scope={{mobile_scope}}&kpi=trees"><span class="emoji">🌳</span><b>{{mobile_trees}}</b><span class="label">{{'Arbres' if mobile_scope=='global' else 'Mes arbres'}}</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi blue" href="/volunteer/dashboard/trees?scope={{mobile_scope}}&kpi=watering"><span class="emoji">💧</span><b>{{mobile_water}}</b><span class="label">À arroser</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi amber" href="/volunteer/dashboard/trees?scope={{mobile_scope}}&kpi=watch"><span class="emoji">⚠️</span><b>{{mobile_watch}}</b><span class="label">À surveiller</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi rose" href="/volunteer/dashboard/interventions?scope={{mobile_scope}}"><span class="emoji">🛠️</span><b>{{mobile_interventions}}</b><span class="label">Interventions</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi green" href="/volunteer/dashboard/trees?scope={{mobile_scope}}&kpi=healthy"><span class="emoji">✅</span><b>{{mobile_health}}</b><span class="label">Bonne santé</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi rose" href="/volunteer/dashboard/alerts?scope={{mobile_scope}}"><span class="emoji">🔔</span><b>{{mobile_alerts}}</b><span class="label">Alertes</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi rose" href="/volunteer/dashboard/missions?scope={{mobile_scope}}"><span class="emoji">🎯</span><b>{{mobile_missions}}</b><span class="label">Missions</span><span class="chev">›</span></a>
     <a class="card rc16174-kpi green" href="/species"><span class="emoji">🌿</span><b>{{mobile_species}}</b><span class="label">Espèces</span><span class="chev">›</span></a>
-    <a class="card rc16174-kpi blue" href="{{'/volunteers' if mobile_scope=='global' else '/volunteer/team'}}"><span class="emoji">👥</span><b>{{mobile_volunteers}}</b><span class="label">Bénévoles</span><span class="chev">›</span></a>
+    <a class="card rc16174-kpi blue" href="/volunteer/dashboard/volunteers?scope={{mobile_scope}}"><span class="emoji">👥</span><b>{{mobile_volunteers}}</b><span class="label">Bénévoles</span><span class="chev">›</span></a>
    </div>
    <div class="rc16174-quote"><span class="leaf">🌱</span><span>« Chaque arbre compte, ensemble faisons la différence. »</span></div>
-  </div>''',mobile_scope=mobile_scope,tree_base=tree_base,mobile_trees=mobile_trees,mobile_water=mobile_water,mobile_watch=mobile_watch,mobile_health=mobile_health,mobile_interventions=mobile_interventions,mobile_missions=mobile_missions,mobile_species=mobile_species,mobile_volunteers=mobile_volunteers,mobile_alerts=mobile_alerts)
+  </div>''',mobile_scope=mobile_scope,mobile_trees=mobile_trees,mobile_water=mobile_water,mobile_watch=mobile_watch,mobile_health=mobile_health,mobile_interventions=mobile_interventions,mobile_missions=mobile_missions,mobile_species=mobile_species,mobile_volunteers=mobile_volunteers,mobile_alerts=mobile_alerts)
  ctx=active_context(); return page('Accueil bénévole',"""<div class="vol-hero"><div class="sub" style="color:#d6e9dc">Espace bénévole privé</div><h2 style="margin:5px 0">Bonjour {{session.get('name')}} 👋</h2><div>{{my_trees}} arbre(s) suivi(s) • {{need_water}} à arroser • {{unread}} notification(s)</div></div><div class="card volunteer-association-actions"><h3>🏛 Associations</h3><div class="association-mobile-actions"><a class="btn" href="/public/associations">🏛 Consulter les associations</a><a class="btn alt" href="/association-request/new">➕ Créer une association</a></div></div><div class="vertical-actions volunteer-home-actions"><a class="vertical-action rc16172-new" href="/messages"><span class="icon">💬</span><span>Messagerie</span></a><a class="vertical-action rc16172-new" href="/suggestions"><span class="icon">💡</span><span>Suggestions</span></a><a class="vertical-action" href="/volunteer/trees"><span class="icon">🌳</span><span>Mes arbres</span></a><a class="vertical-action" href="/volunteer/gps-quick"><span class="icon">📍</span><span>Position GPS rapide</span></a><a class="vertical-action" href="/planting/new"><span class="icon">🌱</span><span>Planter un arbre</span></a><a class="vertical-action" href="/volunteer/watering"><span class="icon">💧</span><span>Arroser</span></a><a class="vertical-action" href="/volunteer/scan"><span class="icon">📷</span><span>Scanner un QR code</span></a><a class="vertical-action" href="/map"><span class="icon">🗺️</span><span>Carte</span></a><a class="vertical-action" href="/volunteer/donate"><span class="icon">🎁</span><span>Faire un don</span></a><a class="vertical-action" href="/volunteer/events"><span class="icon">📆</span><span>Événements</span></a>{% if can_missions %}<a class="vertical-action" href="/volunteer/missions"><span class="icon">📋</span><span>Mes missions</span></a>{% endif %}{% if can_interventions %}<a class="vertical-action" href="/interventions"><span class="icon">🛠</span><span>Interventions</span></a>{% endif %}{% if can_team %}<a class="vertical-action" href="/volunteer/team"><span class="icon">👥</span><span>Mon équipe</span></a>{% endif %}<a class="vertical-action" href="/notifications"><span class="icon">🔔</span><span>Notifications</span></a><a class="vertical-action" href="/volunteer/profile"><span class="icon">👤</span><span>Mon profil</span></a></div><div class="card desktop-dashboard-details" style="margin-top:16px"><h3>Priorités terrain</h3><table><tr><th>Arbre</th><th>Zone</th><th>État</th><th></th></tr>{% for t in priority %}<tr><td>{{t.tree_code or 'En attente'}}<div class="sub">{{t.species_name}}</div></td><td>{{t.zone_name or '—'}}</td><td>{{t.watering_status}} / {{t.health_status}}</td><td><a class="btn alt" href="/tree/{{t.id}}">Ouvrir</a></td></tr>{% else %}<tr><td colspan="4">Aucune priorité actuellement.</td></tr>{% endfor %}</table></div><div class="bottom-space"></div>""",missions=missions,my_trees=my_trees,need_water=need_water,unread=unread,priority=priority,recent_missions=recent_missions,can_missions=can_missions,can_interventions=can_interventions,can_team=can_team)
+
+# RC16.17.7 — destinations KPI Web téléphone. Chaque écran reprend exactement la requête du compteur.
+@app.route('/volunteer/dashboard/trees')
+@login_required
+def volunteer_dashboard_trees():
+ if is_admin(): return redirect('/trees')
+ scope='global' if request.args.get('scope')=='global' else 'personal'; kpi=clean(request.args.get('kpi') or 'trees').lower(); uid=session['uid']
+ labels={'trees':'Arbres','watering':'À arroser','watch':'À surveiller','healthy':'Bonne santé'}
+ if kpi not in labels: kpi='trees'
+ c=db(); where=["t.active=1","t.approval_status='approved'"]; params=[]
+ if scope=='personal': where.append('t.planted_by_user_id=?'); params.append(uid)
+ if kpi=='watering': where.append("t.watering_status IN ('À arroser','Urgent')")
+ elif kpi=='watch': where.append("t.health_status IN ('À surveiller','En danger')")
+ elif kpi=='healthy': where.append("t.health_status IN ('Bon','Bonne santé')")
+ rows=c.execute("""SELECT t.id,t.tree_code,t.health_status,t.watering_status,s.name_fr species_name,a.name association_name
+ FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
+ WHERE """+' AND '.join(where)+' ORDER BY t.id DESC',params).fetchall(); c.close()
+ return page(labels[kpi],"""<div class='section-title'><div><h2>{{icon}} {{title}}</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card mobile-kpi-list'><table><tr><th>Code</th><th>Espèce</th><th>État</th><th></th></tr>{% for t in rows %}<tr><td><b>{{t.tree_code or '—'}}</b></td><td>{{t.species_name or 'Arbre'}}</td><td>{{t.health_status or '—'}}<br><span class='sub'>{{t.watering_status or '—'}}</span></td><td><a class='btn alt' href='/tree/{{t.id}}'>›</a></td></tr>{% else %}<tr><td colspan='4'>Aucun résultat.</td></tr>{% endfor %}</table></div>""",rows=rows,title=labels[kpi],icon={'trees':'🌳','watering':'💧','watch':'⚠️','healthy':'✅'}[kpi],scope=scope)
+
+@app.route('/volunteer/dashboard/interventions')
+@login_required
+def volunteer_dashboard_interventions():
+ if is_admin(): return redirect('/interventions')
+ scope='global' if request.args.get('scope')=='global' else 'personal'; uid=session['uid']; c=db(); where=['1=1']; params=[]
+ if scope=='personal': where.append('i.user_id=?'); params.append(uid)
+ rows=c.execute("""SELECT i.id,i.intervention_type,i.status,i.planned_at,i.performed_at,t.tree_code,s.name_fr species_name
+ FROM interventions i JOIN trees t ON t.id=i.tree_id LEFT JOIN species s ON s.id=t.species_id WHERE """+' AND '.join(where)+" ORDER BY COALESCE(i.performed_at,i.planned_at,i.created_at) DESC",params).fetchall(); c.close()
+ return page('Interventions',"""<div class='section-title'><div><h2>🛠️ Interventions</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card'><table><tr><th>Type</th><th>Arbre</th><th>État</th><th></th></tr>{% for x in rows %}<tr><td>{{x.intervention_type}}</td><td>{{x.tree_code or x.species_name or 'Arbre'}}</td><td>{{x.status}}</td><td><a class='btn alt' href='/interventions/{{x.id}}'>›</a></td></tr>{% else %}<tr><td colspan='4'>Aucune intervention.</td></tr>{% endfor %}</table></div>""",rows=rows,scope=scope)
+
+@app.route('/volunteer/dashboard/missions')
+@login_required
+def volunteer_dashboard_missions():
+ if is_admin(): return redirect('/missions')
+ scope='global' if request.args.get('scope')=='global' else 'personal'; uid=session['uid']; c=db()
+ if scope=='global':
+  rows=c.execute("SELECT m.* FROM missions m WHERE m.active=1 AND m.status IN ('Planifiée','En cours') ORDER BY COALESCE(m.start_at,m.created_at) DESC").fetchall()
+ else:
+  rows=c.execute("SELECT m.* FROM mission_participants mp JOIN missions m ON m.id=mp.mission_id WHERE mp.user_id=? AND m.active=1 AND m.status IN ('Planifiée','En cours') ORDER BY COALESCE(m.start_at,m.created_at) DESC",(uid,)).fetchall()
+ c.close(); return page('Missions',"""<div class='section-title'><div><h2>🎯 Missions</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card'><table><tr><th>Mission</th><th>Date</th><th>État</th><th></th></tr>{% for m in rows %}<tr><td><b>{{m.title}}</b></td><td>{{m.start_at or 'À confirmer'}}</td><td>{{m.status}}</td><td><a class='btn alt' href='/missions/{{m.id}}'>›</a></td></tr>{% else %}<tr><td colspan='4'>Aucune mission.</td></tr>{% endfor %}</table></div>""",rows=rows,scope=scope)
+
+@app.route('/volunteer/dashboard/alerts')
+@login_required
+def volunteer_dashboard_alerts():
+ if is_admin(): return redirect('/notifications')
+ scope='global' if request.args.get('scope')=='global' else 'personal'; uid=session['uid']; c=db()
+ if scope=='global': rows=c.execute("SELECT * FROM notifications WHERE is_read=0 ORDER BY created_at DESC").fetchall()
+ else: rows=c.execute("SELECT * FROM notifications WHERE (user_id=? OR user_id IS NULL) AND is_read=0 ORDER BY created_at DESC",(uid,)).fetchall()
+ c.close(); return page('Alertes',"""<div class='section-title'><div><h2>🔔 Alertes</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card'>{% for n in rows %}<a class='vertical-action' href='/notifications/{{n.id}}/open'><span class='icon'>🔔</span><span><b>{{n.title or 'Notification'}}</b><br><small>{{n.message or ''}}</small></span></a>{% else %}<p>Aucune alerte.</p>{% endfor %}</div>""",rows=rows,scope=scope)
+
+@app.route('/volunteer/dashboard/volunteers')
+@login_required
+def volunteer_dashboard_volunteers():
+ if is_admin(): return redirect('/volunteers')
+ scope='global' if request.args.get('scope')=='global' else 'personal'; uid=session['uid']; c=db()
+ if scope=='global':
+  rows=c.execute("""SELECT u.id,u.name,u.phone FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.active=1 AND (r.name='volunteer' OR (r.name IS NULL AND u.role='volunteer')) ORDER BY u.name""").fetchall()
+ else:
+  me=c.execute('SELECT team_id FROM users WHERE id=?',(uid,)).fetchone(); team_id=me['team_id'] if me else None
+  rows=c.execute("SELECT u.id,u.name,u.phone FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? AND u.active=1 ORDER BY u.name",(team_id,)).fetchall() if team_id else []
+ c.close(); return page('Bénévoles',"""<div class='section-title'><div><h2>👥 Bénévoles</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon équipe'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card'>{% for u in rows %}<div class='vertical-action'><span class='icon'>👤</span><span><b>{{u.name}}</b><br><small>{{u.phone or ''}}</small></span></div>{% else %}<p>Aucun bénévole dans ce périmètre.</p>{% endfor %}</div>""",rows=rows,scope=scope)
 
 @app.route('/volunteer/missions')
 @login_required
