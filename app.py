@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.17.8 — Tree KPI List Server Error Fix'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.9 — KPI Page Rendering Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -3105,7 +3105,7 @@ def volunteer_dashboard_trees():
    WHERE """+' AND '.join(where)+' ORDER BY t.id DESC',tuple(params)).fetchall()
  finally:
   c.close()
- return page(labels[kpi],"""<div class='section-title'><div><h2>{{icon}} {{title}}</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card mobile-kpi-list'><table><tr><th>Code</th><th>Espèce</th><th>État</th><th></th></tr>{% for t in rows %}<tr><td><b>{{t.tree_code or '—'}}</b></td><td>{{t.species_name or 'Arbre'}}</td><td>{{t.health_status or '—'}}<br><span class='sub'>{{t.watering_status or '—'}}</span></td><td><a class='btn alt' href='/tree/{{t.id}}'>›</a></td></tr>{% else %}<tr><td colspan='4'>Aucun résultat.</td></tr>{% endfor %}</table></div>""",rows=rows,title=labels[kpi],icon={'trees':'🌳','watering':'💧','watch':'⚠️','healthy':'✅'}[kpi],scope=scope)
+ return page(labels[kpi],"""<div class='section-title'><div><h2>{{icon}} {{kpi_title}}</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card mobile-kpi-list'><table><tr><th>Code</th><th>Espèce</th><th>État</th><th></th></tr>{% for t in rows %}<tr><td><b>{{t.tree_code or '—'}}</b></td><td>{{t.species_name or 'Arbre'}}</td><td>{{t.health_status or '—'}}<br><span class='sub'>{{t.watering_status or '—'}}</span></td><td><a class='btn alt' href='/tree/{{t.id}}'>›</a></td></tr>{% else %}<tr><td colspan='4'>Aucun résultat.</td></tr>{% endfor %}</table></div>""",rows=rows,kpi_title=labels[kpi],icon={'trees':'🌳','watering':'💧','watch':'⚠️','healthy':'✅'}[kpi],scope=scope)
 
 @app.route('/volunteer/dashboard/interventions')
 @login_required
