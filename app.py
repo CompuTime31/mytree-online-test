@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.17.9 — KPI Page Rendering Fix'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.10 — Messaging Server Error Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS association_roles(id INTEGER PRIMARY KEY AUTOINCREMEN
 CREATE TABLE IF NOT EXISTS user_contexts(user_id INTEGER PRIMARY KEY,context_type TEXT DEFAULT 'personal',association_id INTEGER,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS message_threads(id INTEGER PRIMARY KEY AUTOINCREMENT,subject TEXT NOT NULL,created_by_user_id INTEGER,created_by_association_id INTEGER,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS message_participants(id INTEGER PRIMARY KEY AUTOINCREMENT,thread_id INTEGER NOT NULL,user_id INTEGER,association_id INTEGER,participant_type TEXT NOT NULL,last_read_at TEXT,UNIQUE(thread_id,user_id,association_id,participant_type));
+CREATE TABLE IF NOT EXISTS internal_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,thread_id INTEGER NOT NULL,sender_user_id INTEGER,sender_association_id INTEGER,body TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,thread_id INTEGER NOT NULL,sender_user_id INTEGER,sender_association_id INTEGER,body TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS app_suggestions(id INTEGER PRIMARY KEY AUTOINCREMENT,author_user_id INTEGER,author_association_id INTEGER,title TEXT NOT NULL,description TEXT NOT NULL,category TEXT DEFAULT 'Amélioration',status TEXT DEFAULT 'Nouvelle',admin_response TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 
@@ -339,6 +340,13 @@ def init_db():
  for col,typ in [('reviewed_by_role','TEXT'),('reviewed_by_association_id','INTEGER')]:
   if col not in columns(c,'trees'): c.execute(f"ALTER TABLE trees ADD COLUMN {col} {typ}")
  migrate_legacy(c)
+ # RC16.17.10: la table historique 'messages' appartient à un ancien module.
+ # La messagerie interne moderne utilise une table dédiée pour rester compatible
+ # avec toutes les bases Railway déjà déployées, sans suppression ni renommage.
+ c.execute("CREATE TABLE IF NOT EXISTS internal_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,thread_id INTEGER NOT NULL,sender_user_id INTEGER,sender_association_id INTEGER,body TEXT NOT NULL,created_at TEXT NOT NULL)")
+ c.execute("CREATE INDEX IF NOT EXISTS idx_internal_messages_thread_created ON internal_messages(thread_id,created_at,id)")
+ c.execute("CREATE INDEX IF NOT EXISTS idx_message_participants_user ON message_participants(user_id,thread_id)")
+ c.execute("CREATE INDEX IF NOT EXISTS idx_message_participants_assoc ON message_participants(association_id,thread_id)")
  seed(c)
  sync_algeria_communes(c)
  # v2.0 Alpha 1: migration non destructive vers le contexte multi-associations.
@@ -4974,12 +4982,12 @@ def web_messages():
    elif target.startswith('u:') and aid:
     tu=int(target[2:]); ok=c.execute("SELECT 1 FROM association_memberships WHERE association_id=? AND user_id=? AND status='approved'",(aid,tu)).fetchone()
     if ok: c.execute("INSERT OR IGNORE INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,tu))
-   c.execute("INSERT INTO messages(thread_id,sender_user_id,sender_association_id,body,created_at) VALUES(?,?,?,?,?)",(tid,uid,aid,body,now)); c.commit(); flash('Message envoyé.')
+   c.execute("INSERT INTO internal_messages(thread_id,sender_user_id,sender_association_id,body,created_at) VALUES(?,?,?,?,?)",(tid,uid,aid,body,now)); c.commit(); flash('Message envoyé.')
   return redirect('/messages')
  superv=_is_super(c,uid)
- if superv: rows=c.execute("SELECT t.*, (SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t ORDER BY t.updated_at DESC").fetchall()
- elif aid: rows=c.execute("SELECT t.*, (SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.association_id=? GROUP BY t.id ORDER BY t.updated_at DESC",(aid,)).fetchall()
- else: rows=c.execute("SELECT t.*, (SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.user_id=? GROUP BY t.id ORDER BY t.updated_at DESC",(uid,)).fetchall()
+ if superv: rows=c.execute("SELECT t.*, (SELECT body FROM internal_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t ORDER BY t.updated_at DESC").fetchall()
+ elif aid: rows=c.execute("SELECT t.*, (SELECT body FROM internal_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.association_id=? GROUP BY t.id ORDER BY t.updated_at DESC",(aid,)).fetchall()
+ else: rows=c.execute("SELECT t.*, (SELECT body FROM internal_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.user_id=? GROUP BY t.id ORDER BY t.updated_at DESC",(uid,)).fetchall()
  targets=[('super','🛡 Super Admin')]
  if uid and not superv:
   targets += [('a:'+str(x['id']),'🏛 '+x['name']) for x in c.execute("SELECT a.id,a.name FROM association_memberships m JOIN associations a ON a.id=m.association_id WHERE m.user_id=? AND m.status='approved' AND a.status='active'",(uid,)).fetchall()]
@@ -5006,8 +5014,8 @@ def web_suggestions():
 @android_auth
 def android_messages_list():
  c=db(); uid=request.android_uid; superv=_is_super(c,uid)
- if superv: rows=c.execute("SELECT t.id,t.subject,t.updated_at,(SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t ORDER BY t.updated_at DESC LIMIT 200").fetchall()
- else: rows=c.execute("SELECT t.id,t.subject,t.updated_at,(SELECT body FROM messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.user_id=? GROUP BY t.id ORDER BY t.updated_at DESC LIMIT 100",(uid,)).fetchall()
+ if superv: rows=c.execute("SELECT t.id,t.subject,t.updated_at,(SELECT body FROM internal_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t ORDER BY t.updated_at DESC LIMIT 200").fetchall()
+ else: rows=c.execute("SELECT t.id,t.subject,t.updated_at,(SELECT body FROM internal_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) last_body FROM message_threads t JOIN message_participants p ON p.thread_id=t.id WHERE p.user_id=? GROUP BY t.id ORDER BY t.updated_at DESC LIMIT 100",(uid,)).fetchall()
  c.close(); return jsonify({'conversations':[dict(x) for x in rows],'supervision':superv})
 
 @app.post('/api/v1/messages')
@@ -5026,7 +5034,7 @@ def android_message_create():
   for x in c.execute("SELECT id FROM users WHERE role='super_admin' AND active=1").fetchall(): c.execute("INSERT OR IGNORE INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,x['id']))
  elif target_type=='association': c.execute("INSERT INTO message_participants(thread_id,association_id,participant_type) VALUES(?,?,'association')",(tid,target_id))
  else: c.execute("INSERT INTO message_participants(thread_id,user_id,participant_type) VALUES(?,?,'user')",(tid,target_id))
- c.execute("INSERT INTO messages(thread_id,sender_user_id,body,created_at) VALUES(?,?,?,?)",(tid,uid,text,now)); c.commit(); c.close(); return jsonify({'ok':True,'thread_id':tid}),201
+ c.execute("INSERT INTO internal_messages(thread_id,sender_user_id,body,created_at) VALUES(?,?,?,?)",(tid,uid,text,now)); c.commit(); c.close(); return jsonify({'ok':True,'thread_id':tid}),201
 
 @app.route('/api/v1/suggestions',methods=['GET','POST'])
 @android_auth
