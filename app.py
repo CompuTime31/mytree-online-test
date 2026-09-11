@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.17.7 — Dashboard KPI Navigation Fix'
+APP_VERSION='v2.0 Alpha 4 — RC16.17.8 — Tree KPI List Server Error Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -3095,9 +3095,16 @@ def volunteer_dashboard_trees():
  if kpi=='watering': where.append("t.watering_status IN ('À arroser','Urgent')")
  elif kpi=='watch': where.append("t.health_status IN ('À surveiller','En danger')")
  elif kpi=='healthy': where.append("t.health_status IN ('Bon','Bonne santé')")
- rows=c.execute("""SELECT t.id,t.tree_code,t.health_status,t.watering_status,s.name_fr species_name,a.name association_name
- FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
- WHERE """+' AND '.join(where)+' ORDER BY t.id DESC',params).fetchall(); c.close()
+ # RC16.17.8 : la liste KPI n'a pas besoin de jointure Association.
+ # Cette jointure provoquait une erreur serveur sur certaines bases Railway migrées.
+ # On conserve exactement les mêmes critères que les compteurs du tableau de bord.
+ try:
+  rows=c.execute("""SELECT t.id,t.tree_code,t.health_status,t.watering_status,
+   COALESCE(s.name_fr,t.species,'Arbre') species_name
+   FROM trees t LEFT JOIN species s ON s.id=t.species_id
+   WHERE """+' AND '.join(where)+' ORDER BY t.id DESC',tuple(params)).fetchall()
+ finally:
+  c.close()
  return page(labels[kpi],"""<div class='section-title'><div><h2>{{icon}} {{title}}</h2><p class='sub'>{{'Tableau de bord global' if scope=='global' else 'Mon tableau de bord'}} · {{rows|length}} résultat(s)</p></div><a class='btn alt' href='/volunteer?scope={{scope}}'>← Tableau de bord</a></div><div class='card mobile-kpi-list'><table><tr><th>Code</th><th>Espèce</th><th>État</th><th></th></tr>{% for t in rows %}<tr><td><b>{{t.tree_code or '—'}}</b></td><td>{{t.species_name or 'Arbre'}}</td><td>{{t.health_status or '—'}}<br><span class='sub'>{{t.watering_status or '—'}}</span></td><td><a class='btn alt' href='/tree/{{t.id}}'>›</a></td></tr>{% else %}<tr><td colspan='4'>Aucun résultat.</td></tr>{% endfor %}</table></div>""",rows=rows,title=labels[kpi],icon={'trees':'🌳','watering':'💧','watch':'⚠️','healthy':'✅'}[kpi],scope=scope)
 
 @app.route('/volunteer/dashboard/interventions')
