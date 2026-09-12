@@ -5,5 +5,3 @@ __pycache__/
 mytree.db
 *.db.before-restore-*
 .DS_Store
-
-demo_runtime/

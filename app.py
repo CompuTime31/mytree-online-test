@@ -11,11 +11,15 @@ import qrcode
 BASE_DIR=os.path.abspath(os.path.dirname(__file__))
 DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-DB_PATH=os.path.join(DATA_DIR,'mytree.db')
+DEMO_MODE=os.environ.get('MYTREE_DEMO_MODE','0').lower() in ('1','true','yes','on')
+DB_PATH=os.environ.get('MYTREE_DB_PATH', os.path.join(DATA_DIR,'mytree.db'))
+DEMO_SEED_DB=os.environ.get('MYTREE_DEMO_SEED_DB', os.path.join(BASE_DIR,'demo','mytree_large_test.db'))
+if DEMO_MODE and not os.path.exists(DB_PATH) and os.path.exists(DEMO_SEED_DB):
+ shutil.copy2(DEMO_SEED_DB, DB_PATH)
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18.2 — Demo Mode'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.3 — Demo Online + Windows + Android'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
