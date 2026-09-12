@@ -1,10 +1,16 @@
 """Generate a deterministic large MyTree demo database for regression testing.
 Uses only Python stdlib. It NEVER overwrites production mytree.db.
 """
-import os,re,random,sqlite3
+import os,re,random,sqlite3,hashlib
 from pathlib import Path
 from datetime import datetime,timedelta,date
 BASE=Path(__file__).resolve().parent
+
+def demo_password_hash(password,salt):
+    # Werkzeug-compatible PBKDF2 hash without requiring Flask/Werkzeug to generate the demo DB.
+    iterations=1000
+    digest=hashlib.pbkdf2_hmac('sha256',password.encode('utf-8'),salt.encode('utf-8'),iterations).hex()
+    return f'pbkdf2:sha256:{iterations}${salt}${digest}'
 OUT=Path(os.environ.get('MYTREE_DEMO_DB', BASE/'demo'/'mytree_large_test.db'))
 OUT.parent.mkdir(parents=True,exist_ok=True)
 if OUT.exists(): OUT.unlink()
@@ -53,17 +59,17 @@ communes=[r[0] for r in c.execute('SELECT id FROM communes WHERE wilaya_id=?',(o
 for i,n in enumerate(['Caroubier','Olivier','Mûrier','Pistachier','Eucalyptus','Figuier','Pin d’Alep','Cyprès','Grenadier','Amandier','Sidr','Acacia'],1):
     c.execute('INSERT OR IGNORE INTO species(name_fr,name_ar,name_en,scientific_name,category,water_need,watering_frequency_days,color,active,created_at) VALUES(?,?,?,?,?,?,?,?,1,?)',(n,n,n,n,'Forestier','Moyen',7,'#2e7b47',ts(-1000)))
 sp=[r[0] for r in c.execute('SELECT id FROM species')]
-# Dummy hashes are sufficient for session-injected UI test DB; production auth is never pointed here.
-c.execute("INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",('Super','Admin','Super Admin','Homme','0500000000','admin@demo.local','admin','DEMO_ONLY',adminrole,'super_admin',1,oran,communes[0],ts(-1000)))
+# RC16.18.1: demo accounts use real Werkzeug hashes so the large test database supports real login flows.
+c.execute("INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",('Super','Admin','Super Admin','Homme','0550002026','admin@demo.local','admin',demo_password_hash('MyTree2026!','mytreeadmin2026'),adminrole,'super_admin',1,oran,communes[0],ts(-1000)))
 admin=c.execute('SELECT last_insert_rowid()').fetchone()[0]
 for i in range(1,301):
-    c.execute("INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(f'Bénévole{i}',f'Démo{i}',f'Bénévole {i:03d}','Homme' if i%2 else 'Femme',f'06{i:08d}'[-10:],f'vol{i}@demo.local',f'vol{i:03d}','DEMO_ONLY',volrole,'volunteer',1,oran,communes[i%len(communes)],ts(-rng.randint(1,900))))
+    c.execute("INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(f'Bénévole{i}',f'Démo{i}',f'Bénévole {i:03d}','Homme' if i%2 else 'Femme',f'06{i:08d}'[-10:],f'vol{i}@demo.local',f'vol{i:03d}',demo_password_hash('Volunteer2026!','mytreevolunteer2026'),volrole,'volunteer',1,oran,communes[i%len(communes)],ts(-rng.randint(1,900))))
 users=[r[0] for r in c.execute("SELECT id FROM users WHERE role='volunteer'")]
 assocs=[]
 for i in range(1,16):
     c.execute("INSERT INTO associations(code,name,short_name,description,wilaya_id,commune_id,address,latitude,longitude,map_symbol,status,created_by_user_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(f'DEMO-A{i:02d}',f'Association Démo {i:02d}',f'AD{i:02d}','Association test',oran,communes[i%len(communes)],f'Oran {i}',35.69+rng.random()*.12,-0.72+rng.random()*.18,'🌳','active',admin,ts(-500)))
     aid=c.execute('SELECT last_insert_rowid()').fetchone()[0]; assocs.append(aid)
-    c.execute("INSERT INTO association_accounts(association_id,login_id,password_hash,active,created_at) VALUES(?,?,?,?,?)",(aid,f'DEMO-A{i:02d}','DEMO_ONLY',1,ts(-400)))
+    c.execute("INSERT INTO association_accounts(association_id,login_id,password_hash,active,created_at) VALUES(?,?,?,?,?)",(aid,f'DEMO-A{i:02d}',demo_password_hash('Association2026!','mytreeassociation2026'),1,ts(-400)))
     for j,uid in enumerate(rng.sample(users,50)):
         c.execute("INSERT OR IGNORE INTO association_memberships(association_id,user_id,member_kind,role_code,status,requested_at,reviewed_by_user_id,reviewed_at) VALUES(?,?,?,?,?,?,?,?)",(aid,uid,'volunteer','association_admin' if j==0 else 'volunteer','approved',ts(-300),admin,ts(-299)))
 projects=[];zones=[]

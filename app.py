@@ -15,7 +15,7 @@ DB_PATH=os.path.join(DATA_DIR,'mytree.db')
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18 — Large Database & Full Button Audit'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.1 — Admin Login Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -297,9 +297,14 @@ def seed(c):
   for i,(name,category) in enumerate(EQUIPMENT_CATALOG,1):
    c.execute('INSERT OR IGNORE INTO equipment(name,category,inventory_code,quantity_total,quantity_available,condition_status,active,created_at) VALUES(?,?,?,?,?,?,1,?)',(name,category,f'CAT-{i:03d}',0,0,'Catalogue',now))
  if c.execute('SELECT COUNT(*) n FROM users').fetchone()['n']==0:
-  c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',('Super','Admin','Super Admin','Homme','0500000000','admin@mytree.local','admin',generate_password_hash('admin123'),admin_role,'super_admin',1,oran,c.execute("SELECT id FROM communes WHERE name='Oran'").fetchone()['id'],datetime.now().isoformat(timespec='minutes')))
+  c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',('Super','Admin','Super Admin','Homme','0550002026','admin@mytree.local','admin',generate_password_hash('MyTree2026!'),admin_role,'super_admin',1,oran,c.execute("SELECT id FROM communes WHERE name='Oran'").fetchone()['id'],datetime.now().isoformat(timespec='minutes')))
  else:
   c.execute("UPDATE users SET role_id=COALESCE(role_id,?), role=COALESCE(role,'super_admin'), created_at=COALESCE(created_at,?) WHERE username='admin'",(admin_role,datetime.now().isoformat(timespec='minutes')))
+ # RC16.18.1: one-time requested Super Admin credential reset. The marker prevents future restarts from resetting a password changed by the administrator.
+ admin_marker=c.execute("SELECT value FROM settings WHERE key='rc16181_admin_credentials_migrated'").fetchone()
+ if not admin_marker:
+  c.execute("UPDATE users SET phone=?, password_hash=?, active=1, role_id=?, role='super_admin' WHERE username='admin'",('0550002026',generate_password_hash('MyTree2026!'),admin_role))
+  c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('rc16181_admin_credentials_migrated','1')")
  volunteer_role=c.execute("SELECT id FROM roles WHERE name='volunteer'").fetchone()['id']
  if not c.execute("SELECT 1 FROM users WHERE username='benevole'").fetchone():
   c.execute('INSERT INTO users(first_name,last_name,name,sex,phone,email,username,password_hash,role_id,role,active,wilaya_id,commune_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',('Bénévole','Démo','Bénévole Démo','Homme','0550000000','benevole@mytree.local','benevole',generate_password_hash('benevole123'),volunteer_role,'volunteer',1,oran,c.execute("SELECT id FROM communes WHERE name='Oran'").fetchone()['id'],datetime.now().isoformat(timespec='minutes')))
