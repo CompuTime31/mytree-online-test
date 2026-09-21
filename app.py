@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, flash, render_template_string, send_file, send_from_directory, url_for, jsonify
+from flask import Flask, request, redirect, session, flash, render_template_string, send_file, send_from_directory, url_for, jsonify, has_request_context
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from functools import wraps
@@ -11,20 +11,41 @@ import qrcode
 BASE_DIR=os.path.abspath(os.path.dirname(__file__))
 DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-DEMO_MODE=os.environ.get('MYTREE_DEMO_MODE','0').lower() in ('1','true','yes','on')
-_default_db_name='mytree-demo.db' if DEMO_MODE else 'mytree.db'
-DB_PATH=os.environ.get('MYTREE_DB_PATH', os.path.join(DATA_DIR,_default_db_name))
+# RC16.18.3.2 — Unified Demo Database
+# One MyTree server exposes two strictly separated SQLite databases.
+PRODUCTION_DB_PATH=os.environ.get('MYTREE_PRODUCTION_DB_PATH', os.path.join(DATA_DIR,'mytree.db'))
+DEMO_DB_PATH=os.environ.get('MYTREE_DEMO_DB_PATH', os.path.join(DATA_DIR,'mytree-demo.db'))
 DEMO_SEED_DB=os.environ.get('MYTREE_DEMO_SEED_DB', os.path.join(BASE_DIR,'demo','mytree_large_test.db'))
 DEMO_RESET_ON_START=os.environ.get('MYTREE_DEMO_RESET_ON_START','0').lower() in ('1','true','yes','on')
-PRODUCTION_URL=os.environ.get('MYTREE_PRODUCTION_URL','').strip().rstrip('/')
-DEMO_URL=os.environ.get('MYTREE_DEMO_URL','').strip().rstrip('/')
-if DEMO_MODE and os.path.exists(DEMO_SEED_DB):
- if DEMO_RESET_ON_START or not os.path.exists(DB_PATH):
-  shutil.copy2(DEMO_SEED_DB, DB_PATH)
+
+# Compatibility alias for legacy utilities; request handlers must use current_db_path().
+DB_PATH=PRODUCTION_DB_PATH
+
+def current_environment():
+ if has_request_context():
+  header=(request.headers.get('X-MyTree-Environment') or '').strip().lower()
+  if header in ('production','demo'):
+   return header
+  value=(session.get('environment') or 'production').strip().lower()
+  return 'demo' if value=='demo' else 'production'
+ return 'production'
+
+def current_db_path():
+ return DEMO_DB_PATH if current_environment()=='demo' else PRODUCTION_DB_PATH
+
+def ensure_demo_database(force=False):
+ if not os.path.exists(DEMO_SEED_DB):
+  return False
+ if force or not os.path.exists(DEMO_DB_PATH) or os.path.getsize(DEMO_DB_PATH)==0:
+  os.makedirs(os.path.dirname(DEMO_DB_PATH) or BASE_DIR,exist_ok=True)
+  shutil.copy2(DEMO_SEED_DB,DEMO_DB_PATH)
+ return True
+
+ensure_demo_database(DEMO_RESET_ON_START)
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18.3.1 — Demo / Production Switch'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.3.2 — Unified Demo Database'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -108,7 +129,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 
 def db():
  # Lot 12 — SQLite durci pour les essais multi-utilisateurs en ligne.
- c=sqlite3.connect(DB_PATH,timeout=15)
+ c=sqlite3.connect(current_db_path(),timeout=15)
  c.row_factory=sqlite3.Row
  c.execute('PRAGMA foreign_keys=ON')
  c.execute('PRAGMA busy_timeout=15000')
@@ -117,12 +138,12 @@ def db():
 LOT12_BACKUP_TAG='alpha4-lot12-pre-migration'
 def backup_before_lot12_migration():
  """Sauvegarde non destructive, une seule fois, avant migration du candidat Online Test."""
- if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH)==0: return None
+ if not os.path.exists(current_db_path()) or os.path.getsize(current_db_path())==0: return None
  marker=os.path.join(DATA_DIR,'.'+LOT12_BACKUP_TAG)
  if os.path.exists(marker): return None
  stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
  backup=os.path.join(DATA_DIR,f'mytree-pre-alpha4-lot12-{stamp}.db')
- src=sqlite3.connect(DB_PATH,timeout=15); dst=sqlite3.connect(backup)
+ src=sqlite3.connect(current_db_path(),timeout=15); dst=sqlite3.connect(backup)
  try: src.backup(dst)
  finally: dst.close(); src.close()
  with open(marker,'w',encoding='utf-8') as f: f.write(os.path.basename(backup))
@@ -574,14 +595,13 @@ def profile_home():
  return '/volunteer'
 
 def environment_switch_html():
- # RC16.18.3.1: demo and production stay on separate deployments/databases.
- # The switch only navigates to a configured trusted environment URL; it never copies data.
- if not session.get('uid') or not is_admin(): return ''
- if DEMO_MODE and PRODUCTION_URL:
-  return '<a class="btn alt" style="white-space:nowrap" href="/environment/production">🟢 Revenir en Production</a>'
- if (not DEMO_MODE) and DEMO_URL:
-  return '<a class="btn alt" style="white-space:nowrap" href="/environment/demo">🟠 Mode Démo</a>'
- return ''
+ env=current_environment()
+ if not session.get('uid') and not session.get('association_id'):
+  return ''
+ if env=='demo':
+  return '<span style="white-space:nowrap;padding:4px 9px;border-radius:999px;background:#f5b942;color:#1f2d22;font-weight:800">🧪 MODE DÉMO</span> <a class="btn alt" style="white-space:nowrap" href="/environment/production">🟢 Revenir en Production</a>'
+ return '<span style="white-space:nowrap;padding:4px 9px;border-radius:999px;background:#d8f3df;color:#174a2b;font-weight:800">🟢 PRODUCTION</span> <a class="btn alt" style="white-space:nowrap" href="/environment/demo">🟠 Mode Démo</a>'
+
 
 def profile_identity():
  if not session.get('uid'): return {'type':'public','name':'Public','subtitle':''}
@@ -1241,7 +1261,7 @@ def page(title,body,**ctx):
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
   ident=profile_identity()
   identity_html='<div class="active-profile-identity '+ident['type']+'"><b>'+ident['name']+'</b><small>'+ident['subtitle']+'</small></div>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+RC16174_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+(' <b style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;background:#f5b942;color:#1f2d22">MODE DÉMO</b>' if DEMO_MODE else '')+'</div></div></div><div class="header-actions">'+language_switcher()+identity_html+environment_switch_html()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+RC16174_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+(' <b style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;background:#f5b942;color:#1f2d22">MODE DÉMO</b>' if current_environment()=='demo' else '')+'</div></div></div><div class="header-actions">'+language_switcher()+identity_html+environment_switch_html()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
   return render_template_string(tpl,content=content)
  return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main>'+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>',content=content)
 
@@ -1356,22 +1376,23 @@ def filter_options(c):
 @login_required
 def switch_environment(target):
  if not is_admin():
-  flash("Seul le Super Admin peut changer d'environnement.")
+  flash('Seul le Super Admin peut changer d’environnement.')
   return redirect(profile_home())
- target=(target or '').lower()
- if target=='production':
-  url=PRODUCTION_URL
- elif target=='demo':
-  url=DEMO_URL
- else:
+ target=(target or '').strip().lower()
+ if target not in ('production','demo'):
   flash('Environnement inconnu.')
   return redirect(profile_home())
- if not url:
-  flash('URL de cet environnement non configurée.')
-  return redirect(profile_home())
- # Déconnexion locale avant de changer de serveur pour éviter toute confusion de session.
+ if target=='demo':
+  if not ensure_demo_database(False):
+   flash('Base Démo indisponible : fichier seed absent.')
+   return redirect(profile_home())
+ # Important: clear authentication/context before switching databases.
  session.clear()
- return redirect(url+'/login')
+ session['environment']=target
+ session.permanent=True
+ flash('Mode Démo activé.' if target=='demo' else 'Base Production activée.')
+ return redirect('/login')
+
 
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -4175,18 +4196,18 @@ def backup_page():
   flash('Accès réservé à l’administration.')
   return redirect('/')
  c=db(); check=c.execute('PRAGMA integrity_check').fetchone()[0]; tables=c.execute("SELECT COUNT(*) n FROM sqlite_master WHERE type='table'").fetchone()['n']; c.close()
- size=os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+ size=os.path.getsize(current_db_path()) if os.path.exists(current_db_path()) else 0
  return page('Sauvegarde et restauration',"""<div class='grid two'><div class='card'><h2>Créer une sauvegarde</h2><p>La sauvegarde contient la base SQLite complète : arbres, utilisateurs, dons, caisse, pépinière, matériel et paramètres.</p><p><b>État :</b> {{check}}<br><b>Tables :</b> {{tables}}<br><b>Taille :</b> {{'%.2f'|format(size/1024/1024)}} Mo</p><a class='btn' href='/backup/download'>💾 Télécharger la sauvegarde</a></div><div class='card danger-zone'><h2>Restaurer une sauvegarde</h2><p>Cette opération remplace la base actuelle. Une copie de sécurité automatique est créée avant restauration.</p><form method='post' action='/backup/restore' enctype='multipart/form-data' onsubmit="return confirm('Restaurer cette base et remplacer les données actuelles ?')"><label>Fichier SQLite<input type='file' name='backup_file' accept='.db,.sqlite,.sqlite3' required></label><p><button class='btn red'>Restaurer</button></p></form></div></div>""",check=check,tables=tables,size=size)
 
 @app.route('/backup/download')
 @login_required
 def backup_download():
  if not is_admin(): return redirect('/')
- if not os.path.exists(DB_PATH):
+ if not os.path.exists(current_db_path()):
   init_db()
  stamp=datetime.now().strftime('%Y%m%d-%H%M%S')
  tmp=os.path.join(tempfile.gettempdir(),f'mytree-backup-{stamp}.db')
- src=sqlite3.connect(DB_PATH); dst=sqlite3.connect(tmp); src.backup(dst); dst.close(); src.close()
+ src=sqlite3.connect(current_db_path()); dst=sqlite3.connect(tmp); src.backup(dst); dst.close(); src.close()
  log_action('backup','database',None,os.path.basename(tmp))
  return send_file(tmp,as_attachment=True,download_name=f'MyTree-backup-{stamp}.db')
 
@@ -4201,9 +4222,9 @@ def backup_restore():
  try:
   test=sqlite3.connect(tmp); result=test.execute('PRAGMA integrity_check').fetchone()[0]; required=test.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','trees','projects')").fetchone()[0]; test.close()
   if result!='ok' or required<3: raise ValueError('Sauvegarde invalide ou incomplète.')
-  safety=DB_PATH+'.before-restore-'+datetime.now().strftime('%Y%m%d-%H%M%S')
-  if os.path.exists(DB_PATH): shutil.copy2(DB_PATH,safety)
-  shutil.copy2(tmp,DB_PATH); init_db(); log_action('restore','database',None,os.path.basename(safety)); flash('Sauvegarde restaurée. Une copie de sécurité de l’ancienne base a été conservée.')
+  safety=current_db_path()+'.before-restore-'+datetime.now().strftime('%Y%m%d-%H%M%S')
+  if os.path.exists(current_db_path()): shutil.copy2(current_db_path(),safety)
+  shutil.copy2(tmp,current_db_path()); init_db(); log_action('restore','database',None,os.path.basename(safety)); flash('Sauvegarde restaurée. Une copie de sécurité de l’ancienne base a été conservée.')
  except Exception as exc:
   flash('Restauration refusée : '+str(exc))
  finally:
@@ -5119,7 +5140,7 @@ def android_app_version():
 
 @app.get('/api/v1/status')
 def android_status():
- return jsonify({'ok':True,'version':APP_VERSION,'api':'v1'})
+ return jsonify({'ok':True,'version':APP_VERSION,'api':'v1','environment':current_environment()})
 
 @app.get('/api/v1/public/projects')
 def api_v1_public_projects():

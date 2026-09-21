@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "MYTREE_DEMO_MODE=1 MYTREE_DB_PATH=/tmp/mytree-demo.db waitress-serve --listen=0.0.0.0:$PORT app:app",
+    "startCommand": "waitress-serve --listen=0.0.0.0:$PORT app:app",
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
