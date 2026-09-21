@@ -12,14 +12,19 @@ BASE_DIR=os.path.abspath(os.path.dirname(__file__))
 DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
 DEMO_MODE=os.environ.get('MYTREE_DEMO_MODE','0').lower() in ('1','true','yes','on')
-DB_PATH=os.environ.get('MYTREE_DB_PATH', os.path.join(DATA_DIR,'mytree.db'))
+_default_db_name='mytree-demo.db' if DEMO_MODE else 'mytree.db'
+DB_PATH=os.environ.get('MYTREE_DB_PATH', os.path.join(DATA_DIR,_default_db_name))
 DEMO_SEED_DB=os.environ.get('MYTREE_DEMO_SEED_DB', os.path.join(BASE_DIR,'demo','mytree_large_test.db'))
-if DEMO_MODE and not os.path.exists(DB_PATH) and os.path.exists(DEMO_SEED_DB):
- shutil.copy2(DEMO_SEED_DB, DB_PATH)
+DEMO_RESET_ON_START=os.environ.get('MYTREE_DEMO_RESET_ON_START','0').lower() in ('1','true','yes','on')
+PRODUCTION_URL=os.environ.get('MYTREE_PRODUCTION_URL','').strip().rstrip('/')
+DEMO_URL=os.environ.get('MYTREE_DEMO_URL','').strip().rstrip('/')
+if DEMO_MODE and os.path.exists(DEMO_SEED_DB):
+ if DEMO_RESET_ON_START or not os.path.exists(DB_PATH):
+  shutil.copy2(DEMO_SEED_DB, DB_PATH)
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18.3 — Demo Online + Windows + Android'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.3.1 — Demo / Production Switch'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -567,6 +572,16 @@ def profile_home():
  if ctx.get('type')=='association': return '/association'
  if is_admin(): return '/'
  return '/volunteer'
+
+def environment_switch_html():
+ # RC16.18.3.1: demo and production stay on separate deployments/databases.
+ # The switch only navigates to a configured trusted environment URL; it never copies data.
+ if not session.get('uid') or not is_admin(): return ''
+ if DEMO_MODE and PRODUCTION_URL:
+  return '<a class="btn alt" style="white-space:nowrap" href="/environment/production">🟢 Revenir en Production</a>'
+ if (not DEMO_MODE) and DEMO_URL:
+  return '<a class="btn alt" style="white-space:nowrap" href="/environment/demo">🟠 Mode Démo</a>'
+ return ''
 
 def profile_identity():
  if not session.get('uid'): return {'type':'public','name':'Public','subtitle':''}
@@ -1226,7 +1241,7 @@ def page(title,body,**ctx):
   back_btn='' if request.path==home_path else '<a class="mobile-back" href="'+back_path+'">←</a>'
   ident=profile_identity()
   identity_html='<div class="active-profile-identity '+ident['type']+'"><b>'+ident['name']+'</b><small>'+ident['subtitle']+'</small></div>'
-  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+RC16174_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+'</div></div></div><div class="header-actions">'+language_switcher()+identity_html+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
+  tpl='<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+tr(title)+'</title>'+STYLE+ALPHA3_STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+FIXED3_STYLE+FIXED6_STYLE+FIXED7_STYLE+RC16174_STYLE+PHOTO_SCRIPT+SMART_NAV_SCRIPT+ACTION_UI_SCRIPT+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script></head><body><header><div class="mobile-title-row">'+back_btn+'<div><b>'+tr(title)+'</b><div class="sub">🌳 MyTree 🇩🇿 — '+APP_VERSION+(' <b style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;background:#f5b942;color:#1f2d22">MODE DÉMO</b>' if DEMO_MODE else '')+'</div></div></div><div class="header-actions">'+language_switcher()+identity_html+environment_switch_html()+bell+' <a class="account-home" href="'+home_path+'">🏠 '+tr('Mon accueil')+'</a> <a class="account-logout" href="/logout">↪ '+tr('Déconnexion')+'</a></div></header><div class="layout">'+nav+'<main>{% for cat,m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{cat}}">{{m}}</div>{% endfor %}{{content|safe}}</main></div>'+connected_mobile_nav()+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>'
   return render_template_string(tpl,content=content)
  return render_template_string('<!doctype html><html lang="'+current_lang()+'" dir="'+current_dir()+'"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+STYLE+LOT9_STYLE+LOT10_STYLE+LOT11_STYLE+LOT12_MAPFIX_STYLE+LOT12_UNIFIED_FILTER_STYLE+UNIVERSAL_SEARCH_SCRIPT+DEPENDENT_SELECTS_SCRIPT+LOT9_UX_SCRIPT+i18n_script()+'</head><body><main style="max-width:680px;margin:28px auto;padding:0 14px">'+language_switcher()+'{{content|safe}}</main>'+LOT12_UNIFIED_FILTER_SCRIPT+'</body></html>',content=content)
 
@@ -1336,6 +1351,27 @@ def tree_where(f):
 def filter_options(c):
  # Compatibilité historique : tous les formulaires existants bénéficient désormais des options Lot 6.
  return common_filter_options(c,filters_from_request())
+
+@app.route('/environment/<target>')
+@login_required
+def switch_environment(target):
+ if not is_admin():
+  flash("Seul le Super Admin peut changer d'environnement.")
+  return redirect(profile_home())
+ target=(target or '').lower()
+ if target=='production':
+  url=PRODUCTION_URL
+ elif target=='demo':
+  url=DEMO_URL
+ else:
+  flash('Environnement inconnu.')
+  return redirect(profile_home())
+ if not url:
+  flash('URL de cet environnement non configurée.')
+  return redirect(profile_home())
+ # Déconnexion locale avant de changer de serveur pour éviter toute confusion de session.
+ session.clear()
+ return redirect(url+'/login')
 
 @app.route('/login',methods=['GET','POST'])
 def login():
