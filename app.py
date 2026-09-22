@@ -11,7 +11,7 @@ import qrcode
 BASE_DIR=os.path.abspath(os.path.dirname(__file__))
 DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-# RC16.18.3.4 — Demo Seed Auto-Rebuild Fix
+# RC16.18.3.5 — Demo Seed Auto-Rebuild Fix
 # One MyTree server exposes two strictly separated SQLite databases.
 PRODUCTION_DB_PATH=os.environ.get('MYTREE_PRODUCTION_DB_PATH', os.path.join(DATA_DIR,'mytree.db'))
 DEMO_DB_PATH=os.environ.get('MYTREE_DEMO_DB_PATH', os.path.join(DATA_DIR,'mytree-demo.db'))
@@ -34,7 +34,7 @@ def current_db_path():
  return DEMO_DB_PATH if current_environment()=='demo' else PRODUCTION_DB_PATH
 
 def ensure_demo_database(force=False):
- # RC16.18.3.4: the Demo environment must remain self-healing on Railway/Windows.
+ # RC16.18.3.5: the Demo environment must remain self-healing on Railway/Windows.
  # Prefer the packaged seed, but if deployment omitted the binary seed, rebuild it
  # deterministically from app.py + generate_large_demo_db.py into the writable DATA_DIR.
  if not force and os.path.exists(DEMO_DB_PATH) and os.path.getsize(DEMO_DB_PATH)>0:
@@ -61,7 +61,7 @@ ensure_demo_database(DEMO_RESET_ON_START)
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18.3.4 — Demo Seed Auto-Rebuild Fix'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.3.5 — Demo Seed Auto-Rebuild Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -423,6 +423,9 @@ def init_db():
  CREATE INDEX IF NOT EXISTS idx_trees_project_zone ON trees(project_id,zone_id);
  CREATE INDEX IF NOT EXISTS idx_trees_approval_active ON trees(approval_status,active);
  CREATE INDEX IF NOT EXISTS idx_trees_gps ON trees(latitude,longitude);
+ CREATE INDEX IF NOT EXISTS idx_trees_map_active_gps ON trees(active,approval_status,latitude,longitude);
+ CREATE INDEX IF NOT EXISTS idx_trees_map_assoc_gps ON trees(association_id,active,approval_status,latitude,longitude);
+ CREATE INDEX IF NOT EXISTS idx_trees_map_project_gps ON trees(project_id,active,approval_status,latitude,longitude);
  CREATE INDEX IF NOT EXISTS idx_trees_species ON trees(species_id,species);
  CREATE INDEX IF NOT EXISTS idx_trees_species_status ON trees(species_id,active,approval_status);
  CREATE INDEX IF NOT EXISTS idx_trees_association_status ON trees(association_id,active,approval_status);
@@ -2258,25 +2261,56 @@ def api_map_data():
  f=filters_from_request(); c=db()
  ctx=active_context(c); uid=session.get('uid'); types=set(request.args.getlist('type')) or {'tree'}
  projects=list(accessible_filter_projects(c,ctx)); project_ids={int(x['id']) for x in projects}; data=[]
- def add(kind,row,title,subtitle='',url=''):
-  # MapFix 2 — certaines ressources (notamment projects) n'ont pas de colonnes GPS.
-  # Ne jamais lever d'exception : ignorer proprement les ressources non géolocalisables.
+ try: zoom=max(1,min(20,int(request.args.get('zoom','11') or 11)))
+ except (TypeError,ValueError): zoom=11
+ bbox=None
+ try:
+  south=float(request.args.get('south')); west=float(request.args.get('west')); north=float(request.args.get('north')); east=float(request.args.get('east'))
+  if -90<=south<north<=90 and -180<=west<east<=180: bbox=(south,west,north,east)
+ except (TypeError,ValueError): pass
+ def add(kind,row,title,subtitle='',url='',extra=None):
   keys=set(row.keys())
   if 'latitude' not in keys or 'longitude' not in keys: return
   lat=row['latitude']; lon=row['longitude']
   if lat is None or lon is None: return
-  data.append({'type':kind,'id':row['id'],'lat':lat,'lon':lon,'title':title,'subtitle':subtitle,'url':url,
-               'association_id':row['association_id'] if 'association_id' in keys else None,
-               'project_id':row['project_id'] if 'project_id' in keys else None})
+  item={'type':kind,'id':row['id'],'lat':lat,'lon':lon,'title':title,'subtitle':subtitle,'url':url,
+        'association_id':row['association_id'] if 'association_id' in keys else None,
+        'project_id':row['project_id'] if 'project_id' in keys else None}
+  if extra: item.update(extra)
+  data.append(item)
+ total_trees=0; tree_groups=0; truncated=False
  if 'tree' in types:
   where,args=['t.active=1',"t.approval_status='approved'",'t.latitude IS NOT NULL','t.longitude IS NOT NULL'],[]
   if f.get('quick')=='mine': where.append('t.planted_by_user_id=?'); args.append(uid)
   for key,col in [('project_id','t.project_id'),('zone_id','t.zone_id'),('species_id','t.species_id'),('volunteer_id','t.planted_by_user_id'),('health_status','t.health_status'),('watering_status','t.watering_status')]:
    if f.get(key): where.append(col+'=?'); args.append(f[key])
   if f.get('association_id'): where.append('t.association_id=?'); args.append(f['association_id'])
-  q="""SELECT t.*,s.name_fr species_name,p.name project_name,z.name zone_name,a.name association_name,a.map_symbol association_symbol FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN users u ON u.id=t.planted_by_user_id LEFT JOIN associations a ON a.id=t.association_id WHERE """+' AND '.join(where)
-  for r in c.execute(q,args).fetchall():
-   if map_resource_allowed(c,ctx,r['association_id'],r['project_id']): add('tree',r,r['tree_code'] or 'Arbre',(r['species_name'] or r['species'] or '')+' · '+(r['project_name'] or 'Hors projet'),'/tree/'+str(r['id']))
+  if bbox:
+   where += ['t.latitude BETWEEN ? AND ?','t.longitude BETWEEN ? AND ?']; args += [bbox[0],bbox[2],bbox[1],bbox[3]]
+  base_where=' AND '.join(where)
+  # At low/medium zoom, never send thousands of Leaflet DOM markers to mobile browsers.
+  # Read only compact coordinates server-side, then aggregate into geographic buckets.
+  if zoom < 15:
+   factor=80 if zoom<=11 else (180 if zoom<=12 else (450 if zoom<=13 else 900))
+   rows=c.execute("SELECT t.id,t.latitude,t.longitude,t.association_id,t.project_id FROM trees t WHERE "+base_where,args).fetchall()
+   buckets={}
+   for r in rows:
+    if not map_resource_allowed(c,ctx,r['association_id'],r['project_id']): continue
+    total_trees += 1
+    key=(round(float(r['latitude'])*factor),round(float(r['longitude'])*factor))
+    b=buckets.setdefault(key,[0,0.0,0.0])
+    b[0]+=1; b[1]+=float(r['latitude']); b[2]+=float(r['longitude'])
+   for i,b in enumerate(buckets.values(),1):
+    n,slat,slon=b; lat=slat/n; lon=slon/n
+    data.append({'type':'cluster','id':'cluster-'+str(i),'lat':lat,'lon':lon,'title':str(n)+' arbres','subtitle':'Touchez pour zoomer','url':'','count':n})
+   tree_groups=len(buckets)
+  else:
+   count_row=c.execute("SELECT COUNT(*) n FROM trees t WHERE "+base_where,args).fetchone(); total_trees=int(count_row['n'] or 0)
+   limit=700
+   q="""SELECT t.*,s.name_fr species_name,p.name project_name,z.name zone_name,a.name association_name,a.map_symbol association_symbol FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN zones z ON z.id=t.zone_id LEFT JOIN associations a ON a.id=t.association_id WHERE """+base_where+" ORDER BY t.id DESC LIMIT ?"
+   for r in c.execute(q,args+[limit]).fetchall():
+    if map_resource_allowed(c,ctx,r['association_id'],r['project_id']): add('tree',r,r['tree_code'] or 'Arbre',(r['species_name'] or r['species'] or '')+' · '+(r['project_name'] or 'Hors projet'),'/tree/'+str(r['id']))
+   truncated=total_trees>limit
  if ctx.get('type')!='personal' and project_ids:
   marks=','.join('?'*len(project_ids))
   if 'project' in types:
@@ -2286,37 +2320,26 @@ def api_map_data():
     if f['commune_id'] and str(r['commune_id'] or '')!=str(f['commune_id']): continue
     add('project',r,r['name'],'Projet'+(' · collaboration' if r['collaborative'] else ''),'/projects/'+str(r['id']))
   if 'zone' in types:
-   q=f"SELECT z.*,p.name project_name,p.wilaya_id project_wilaya_id,p.commune_id project_commune_id FROM zones z LEFT JOIN projects p ON p.id=z.project_id WHERE z.active=1 AND z.project_id IN ({marks}) AND z.latitude IS NOT NULL AND z.longitude IS NOT NULL"; args=list(sorted(project_ids))
-   if f['project_id']: q+=' AND z.project_id=?'; args.append(f['project_id'])
-   if f['zone_id']: q+=' AND z.id=?'; args.append(f['zone_id'])
-   if f['wilaya_id']: q+=' AND COALESCE(z.wilaya_id,p.wilaya_id)=?'; args.append(f['wilaya_id'])
-   if f['commune_id']: q+=' AND COALESCE(z.commune_id,p.commune_id)=?'; args.append(f['commune_id'])
-   for r in c.execute(q,args).fetchall(): add('zone',r,r['name'],'Zone · '+(r['project_name'] or ''),'/zones/'+str(r['id']))
+   q=f"SELECT z.*,p.name project_name,p.wilaya_id project_wilaya_id,p.commune_id project_commune_id FROM zones z LEFT JOIN projects p ON p.id=z.project_id WHERE z.active=1 AND z.project_id IN ({marks}) AND z.latitude IS NOT NULL AND z.longitude IS NOT NULL"; args2=list(sorted(project_ids))
+   if f['project_id']: q+=' AND z.project_id=?'; args2.append(f['project_id'])
+   if f['zone_id']: q+=' AND z.id=?'; args2.append(f['zone_id'])
+   if f['wilaya_id']: q+=' AND COALESCE(z.wilaya_id,p.wilaya_id)=?'; args2.append(f['wilaya_id'])
+   if f['commune_id']: q+=' AND COALESCE(z.commune_id,p.commune_id)=?'; args2.append(f['commune_id'])
+   if bbox: q+=' AND z.latitude BETWEEN ? AND ? AND z.longitude BETWEEN ? AND ?'; args2 += [bbox[0],bbox[2],bbox[1],bbox[3]]
+   for r in c.execute(q,args2).fetchall(): add('zone',r,r['name'],'Zone · '+(r['project_name'] or ''),'/zones/'+str(r['id']))
   if 'event' in types:
-   q=f"SELECT e.*,p.name project_name FROM events e LEFT JOIN projects p ON p.id=e.project_id WHERE e.active=1 AND e.project_id IN ({marks}) AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL"; args=list(sorted(project_ids))
-   if f['project_id']: q+=' AND e.project_id=?'; args.append(f['project_id'])
-   if f['zone_id']: q+=' AND e.zone_id=?'; args.append(f['zone_id'])
-   if f['status']: q+=' AND e.status=?'; args.append(f['status'])
-   if f['action_type']: q+=' AND e.event_type=?'; args.append(f['action_type'])
-   if f['date_from']: q+=' AND date(e.start_at)>=date(?)'; args.append(f['date_from'])
-   if f['date_to']: q+=' AND date(e.start_at)<=date(?)'; args.append(f['date_to'])
-   if f['wilaya_id']: q+=' AND p.wilaya_id=?'; args.append(f['wilaya_id'])
-   if f['commune_id']: q+=' AND p.commune_id=?'; args.append(f['commune_id'])
-   for r in c.execute(q,args).fetchall(): add('event',r,r['title'],'Événement · '+(r['project_name'] or ''),'/events/'+str(r['id']))
-  if 'mission' in types:
-   q=f"SELECT m.*,p.name project_name FROM missions m LEFT JOIN projects p ON p.id=m.project_id WHERE m.active=1 AND m.project_id IN ({marks}) AND m.latitude IS NOT NULL AND m.longitude IS NOT NULL"; args=list(sorted(project_ids))
-   if f['project_id']: q+=' AND m.project_id=?'; args.append(f['project_id'])
-   if f['zone_id']: q+=' AND m.zone_id=?'; args.append(f['zone_id'])
-   if f['status']: q+=' AND m.status=?'; args.append(f['status'])
-   if f['priority']: q+=' AND m.priority=?'; args.append(f['priority'])
-   if f['action_type']: q+=' AND m.mission_type=?'; args.append(f['action_type'])
-   if f['volunteer_id']: q+=' AND (m.leader_user_id=? OR EXISTS(SELECT 1 FROM mission_participants mp WHERE mp.mission_id=m.id AND mp.user_id=?))'; args += [f['volunteer_id'],f['volunteer_id']]
-   if f['date_from']: q+=' AND date(m.start_at)>=date(?)'; args.append(f['date_from'])
-   if f['date_to']: q+=' AND date(m.start_at)<=date(?)'; args.append(f['date_to'])
-   if f['wilaya_id']: q+=' AND p.wilaya_id=?'; args.append(f['wilaya_id'])
-   if f['commune_id']: q+=' AND p.commune_id=?'; args.append(f['commune_id'])
-   for r in c.execute(q,args).fetchall(): add('mission',r,r['title'],'Mission · '+(r['project_name'] or ''),'/missions/'+str(r['id']))
- c.close(); return jsonify({'context':ctx,'filters':f,'items':data})
+   q=f"SELECT e.*,p.name project_name FROM events e LEFT JOIN projects p ON p.id=e.project_id WHERE e.active=1 AND e.project_id IN ({marks}) AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL"; args3=list(sorted(project_ids))
+   if f['project_id']: q+=' AND e.project_id=?'; args3.append(f['project_id'])
+   if f['zone_id']: q+=' AND e.zone_id=?'; args3.append(f['zone_id'])
+   if f['status']: q+=' AND e.status=?'; args3.append(f['status'])
+   if f['action_type']: q+=' AND e.event_type=?'; args3.append(f['action_type'])
+   if f['date_from']: q+=' AND date(e.start_at)>=date(?)'; args3.append(f['date_from'])
+   if f['date_to']: q+=' AND date(e.start_at)<=date(?)'; args3.append(f['date_to'])
+   if f['wilaya_id']: q+=' AND p.wilaya_id=?'; args3.append(f['wilaya_id'])
+   if f['commune_id']: q+=' AND p.commune_id=?'; args3.append(f['commune_id'])
+   if bbox: q+=' AND e.latitude BETWEEN ? AND ? AND e.longitude BETWEEN ? AND ?'; args3 += [bbox[0],bbox[2],bbox[1],bbox[3]]
+   for r in c.execute(q,args3).fetchall(): add('event',r,r['title'],'Événement · '+(r['project_name'] or ''),'/events/'+str(r['id']))
+ c.close(); return jsonify({'context':ctx,'filters':f,'items':data,'zoom':zoom,'tree_total':total_trees,'tree_groups':tree_groups,'truncated':truncated})
 
 @app.route('/map')
 @login_required
@@ -2326,7 +2349,7 @@ def real_map():
  # La carte est publique en lecture pour les arbres; la liste de bénévoles sert seulement au filtre.
  opts['volunteers']=c.execute("SELECT id,name FROM users WHERE active=1 AND (role='volunteer' OR role_id IN (SELECT id FROM roles WHERE name='volunteer')) ORDER BY name").fetchall()
  c.close()
- return page('Carte commune',"""<div class='mobile-map-page'><div class='section-title'><div><h2>🗺 Carte commune</h2><p class='sub'>Par défaut, seuls les arbres sont affichés. Ajoutez Zones ou Événements depuis Filtrer.</p></div></div><div class='map-filter-bar map-scope-bar noprint'>{% if ctx.type=='personal' %}<a class='btn {% if f.quick!="mine" %}active{% else %}alt{% endif %}' href='/map'>🌐 Carte globale</a><a class='btn {% if f.quick=="mine" %}active{% else %}alt{% endif %}' href='/map?quick=mine'>🗺 Ma carte</a>{% elif ctx.type=='association' %}<a class='btn {% if request.args.get("scope")!="global" %}active{% else %}alt{% endif %}' href='/map'>🏛 Carte Association</a><a class='btn {% if request.args.get("scope")=="global" %}active{% else %}alt{% endif %}' href='/map?scope=global'>🌐 Carte globale</a>{% endif %}</div><div class='map-filter-bar map-action-bar noprint'><button class='btn' type='button' id='toggleMapFilters'>🔎 Filtrer</button>{% if f.quick=='mine' %}<span class='badge good'>👤 Mes arbres ✓</span><a class='btn alt' href='/map'>✕ Supprimer le filtre</a>{% endif %}<span id='activeFilterSummary' class='sub'></span></div><form id='mapFilters' class='card map-filter-drawer noprint' method='get' aria-hidden='true'><div class='section-title'><h3>🔎 Filtres de la carte</h3><button class='btn alt' type='button' id='closeMapFilters'>Fermer</button></div>{% if f.quick %}<input type='hidden' name='quick' value='{{f.quick}}'>{% endif %}<div class='card'><b>Afficher sur la carte</b><div class='map-layer-choices'><label><input type='checkbox' name='type' value='tree' checked> 🌳 Arbres</label><label><input type='checkbox' name='type' value='zone' {% if 'zone' in request.args.getlist('type') %}checked{% endif %}> 🟩 Zones</label><label><input type='checkbox' name='type' value='event' {% if 'event' in request.args.getlist('type') %}checked{% endif %}> 📆 Événements</label></div></div><div class='map-filter-grid'><label>Association<select name='association_id'><option value=''>Toutes</option>{% for a in associations %}<option value='{{a.id}}' {% if f.association_id|string==a.id|string %}selected{% endif %}>{{a.map_symbol or '🌳'}} {{a.name}}</option>{% endfor %}</select></label><label>Projet<select name='project_id'><option value=''>Tous</option>{% for p in projects %}<option value='{{p.id}}' {% if f.project_id|string==p.id|string %}selected{% endif %}>{{p.name}}</option>{% endfor %}</select></label><label>Zone<select name='zone_id'><option value=''>Toutes</option>{% for z in zones %}<option value='{{z.id}}' {% if f.zone_id|string==z.id|string %}selected{% endif %}>{{z.name}}</option>{% endfor %}</select></label><label>Espèce<select name='species_id'><option value=''>Toutes</option>{% for x in species %}<option value='{{x.id}}' {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label><label>Bénévole<select name='volunteer_id'><option value=''>Tous</option>{% for x in volunteers %}<option value='{{x.id}}' {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Santé<select name='health_status'><option value=''>Toutes</option>{% for x in ['Bon','À surveiller','En danger','Mort'] %}<option {% if f.health_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Arrosage<select name='watering_status'><option value=''>Tous</option>{% for x in ['À jour','À arroser','Urgent'] %}<option {% if f.watering_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label></div><div class='map-filter-actions'><button class='btn'>Appliquer</button><a class='btn alt' href='/map'>Réinitialiser</a></div></form><div class='map-filter-bar map-location-bar noprint'><button class='btn alt' type='button' id='locateBtn'>📍 Ma position</button></div><div class='card map-result-count'><b id='resultCount'>Chargement…</b></div><div class='grid two map-layout'><div class='card map-card'><div id='map' class='real-map'></div></div><div class='card map-nearby-card'><h3>Éléments proches</h3><div id='locationStatus' class='sub'>Utilisez « Ma position » pour calculer les distances.</div><div id='nearbyList'></div></div></div><script>(function(){const qp=new URLSearchParams(location.search);if(!qp.getAll('type').length)qp.append('type','tree');const box=mapFilters,open=toggleMapFilters,close=closeMapFilters;function drawer(v){box.classList.toggle('open',v);box.setAttribute('aria-hidden',v?'false':'true');(v?close:open).focus()}open.onclick=()=>drawer(true);close.onclick=()=>drawer(false);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&box.classList.contains('open'))drawer(false)});const map=L.map('map').setView([35.697,-0.633],11),group=L.featureGroup().addTo(map);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap'}).addTo(map);let items=[],me=null,meMarker=null;const icons={tree:'🌳',zone:'🟩',event:'📆'};const esc=v=>String(v??'—').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function icon(x){return L.divIcon({className:'tree-emoji-marker map-common-marker',html:'<span>'+icons[x.type]+'</span>',iconSize:[32,32],iconAnchor:[16,27]})}function pop(x){let h='<b>'+icons[x.type]+' '+esc(x.title)+'</b><br>'+esc(x.subtitle);if(x.url)h+='<br><a href="'+x.url+'">Voir la fiche</a>';if(x.type==='tree')h+='<br><a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(x.lat+','+x.lon)+'">📍 Itinéraire</a>';return h}fetch('/api/map-data?'+qp).then(r=>r.ok?r.json():Promise.reject()).then(p=>{items=p.items||[];resultCount.textContent=items.length+' élément(s) visible(s)';items.forEach(x=>L.marker([x.lat,x.lon],{icon:icon(x)}).bindPopup(pop(x)).addTo(group));if(items.length)map.fitBounds(group.getBounds().pad(.18),{maxZoom:16})}).catch(()=>resultCount.textContent='Impossible de charger la carte.');locateBtn.onclick=()=>navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{me={lat:p.coords.latitude,lng:p.coords.longitude};if(meMarker)map.removeLayer(meMarker);meMarker=L.marker(me).addTo(map).bindPopup('Votre position');map.setView(me,15);locationStatus.textContent='Position obtenue.'},()=>locationStatus.textContent='Position refusée ou indisponible.');})();</script></div>""",ctx=ctx,f=f,**opts)
+ return page('Carte commune',"""<div class='mobile-map-page'><div class='section-title'><div><h2>🗺 Carte commune</h2><p class='sub'>Par défaut, seuls les arbres sont affichés. Ajoutez Zones ou Événements depuis Filtrer.</p></div></div><div class='map-filter-bar map-scope-bar noprint'>{% if ctx.type=='personal' %}<a class='btn {% if f.quick!="mine" %}active{% else %}alt{% endif %}' href='/map'>🌐 Carte globale</a><a class='btn {% if f.quick=="mine" %}active{% else %}alt{% endif %}' href='/map?quick=mine'>🗺 Ma carte</a>{% elif ctx.type=='association' %}<a class='btn {% if request.args.get("scope")!="global" %}active{% else %}alt{% endif %}' href='/map'>🏛 Carte Association</a><a class='btn {% if request.args.get("scope")=="global" %}active{% else %}alt{% endif %}' href='/map?scope=global'>🌐 Carte globale</a>{% endif %}</div><div class='map-filter-bar map-action-bar noprint'><button class='btn' type='button' id='toggleMapFilters'>🔎 Filtrer</button>{% if f.quick=='mine' %}<span class='badge good'>👤 Mes arbres ✓</span><a class='btn alt' href='/map'>✕ Supprimer le filtre</a>{% endif %}<span id='activeFilterSummary' class='sub'></span></div><form id='mapFilters' class='card map-filter-drawer noprint' method='get' aria-hidden='true'><div class='section-title'><h3>🔎 Filtres de la carte</h3><button class='btn alt' type='button' id='closeMapFilters'>Fermer</button></div>{% if f.quick %}<input type='hidden' name='quick' value='{{f.quick}}'>{% endif %}<div class='card'><b>Afficher sur la carte</b><div class='map-layer-choices'><label><input type='checkbox' name='type' value='tree' checked> 🌳 Arbres</label><label><input type='checkbox' name='type' value='zone' {% if 'zone' in request.args.getlist('type') %}checked{% endif %}> 🟩 Zones</label><label><input type='checkbox' name='type' value='event' {% if 'event' in request.args.getlist('type') %}checked{% endif %}> 📆 Événements</label></div></div><div class='map-filter-grid'><label>Association<select name='association_id'><option value=''>Toutes</option>{% for a in associations %}<option value='{{a.id}}' {% if f.association_id|string==a.id|string %}selected{% endif %}>{{a.map_symbol or '🌳'}} {{a.name}}</option>{% endfor %}</select></label><label>Projet<select name='project_id'><option value=''>Tous</option>{% for p in projects %}<option value='{{p.id}}' {% if f.project_id|string==p.id|string %}selected{% endif %}>{{p.name}}</option>{% endfor %}</select></label><label>Zone<select name='zone_id'><option value=''>Toutes</option>{% for z in zones %}<option value='{{z.id}}' {% if f.zone_id|string==z.id|string %}selected{% endif %}>{{z.name}}</option>{% endfor %}</select></label><label>Espèce<select name='species_id'><option value=''>Toutes</option>{% for x in species %}<option value='{{x.id}}' {% if f.species_id|string==x.id|string %}selected{% endif %}>{{x.name_fr}}</option>{% endfor %}</select></label><label>Bénévole<select name='volunteer_id'><option value=''>Tous</option>{% for x in volunteers %}<option value='{{x.id}}' {% if f.volunteer_id|string==x.id|string %}selected{% endif %}>{{x.name}}</option>{% endfor %}</select></label><label>Santé<select name='health_status'><option value=''>Toutes</option>{% for x in ['Bon','À surveiller','En danger','Mort'] %}<option {% if f.health_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label><label>Arrosage<select name='watering_status'><option value=''>Tous</option>{% for x in ['À jour','À arroser','Urgent'] %}<option {% if f.watering_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label></div><div class='map-filter-actions'><button class='btn'>Appliquer</button><a class='btn alt' href='/map'>Réinitialiser</a></div></form><div class='map-filter-bar map-location-bar noprint'><button class='btn alt' type='button' id='locateBtn'>📍 Ma position</button></div><div class='card map-result-count'><b id='resultCount'>Chargement…</b></div><div class='grid two map-layout'><div class='card map-card'><div id='map' class='real-map'></div></div><div class='card map-nearby-card'><h3>Éléments proches</h3><div id='locationStatus' class='sub'>Utilisez « Ma position » pour calculer les distances.</div><div id='nearbyList'></div></div></div><script>(function(){const qp=new URLSearchParams(location.search);if(!qp.getAll('type').length)qp.append('type','tree');const box=mapFilters,open=toggleMapFilters,close=closeMapFilters;function drawer(v){box.classList.toggle('open',v);box.setAttribute('aria-hidden',v?'false':'true');(v?close:open).focus()}open.onclick=()=>drawer(true);close.onclick=()=>drawer(false);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&box.classList.contains('open'))drawer(false)});const map=L.map('map',{preferCanvas:true}).setView([35.697,-0.633],11),group=L.featureGroup().addTo(map);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap',updateWhenIdle:true,keepBuffer:1}).addTo(map);let items=[],me=null,meMarker=null,loadTimer=null,loadSeq=0;const icons={tree:'🌳',zone:'🟩',event:'📆',cluster:'🌳'};const esc=v=>String(v??'—').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function pop(x){let h='<b>'+icons[x.type]+' '+esc(x.title)+'</b><br>'+esc(x.subtitle);if(x.url)h+='<br><a href="'+x.url+'">Voir la fiche</a>';if(x.type==='tree')h+='<br><a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(x.lat+','+x.lon)+'">📍 Itinéraire</a>';return h}function draw(x){if(x.type==='cluster'){const n=x.count||1,r=Math.max(15,Math.min(31,12+Math.log2(n+1)*3));const mk=L.circleMarker([x.lat,x.lon],{radius:r,weight:2,fillOpacity:.78,renderer:L.canvas()}).addTo(group).bindTooltip(String(n),{permanent:true,direction:'center',className:'map-cluster-count'});mk.on('click',()=>map.setView([x.lat,x.lon],Math.min(17,map.getZoom()+2)));return}if(x.type==='tree'){L.circleMarker([x.lat,x.lon],{radius:6,weight:1,fillOpacity:.86,renderer:L.canvas()}).bindPopup(pop(x)).addTo(group);return}const ic=L.divIcon({className:'tree-emoji-marker map-common-marker',html:'<span>'+icons[x.type]+'</span>',iconSize:[32,32],iconAnchor:[16,27]});L.marker([x.lat,x.lon],{icon:ic}).bindPopup(pop(x)).addTo(group)}function loadMap(){clearTimeout(loadTimer);loadTimer=setTimeout(()=>{const seq=++loadSeq,b=map.getBounds(),q=new URLSearchParams(qp);q.set('zoom',String(map.getZoom()));q.set('south',b.getSouth().toFixed(6));q.set('west',b.getWest().toFixed(6));q.set('north',b.getNorth().toFixed(6));q.set('east',b.getEast().toFixed(6));resultCount.textContent='Chargement de la zone visible…';fetch('/api/map-data?'+q,{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(p=>{if(seq!==loadSeq)return;group.clearLayers();items=p.items||[];items.forEach(draw);if(p.tree_groups>0)resultCount.textContent=(p.tree_total||0)+' arbre(s) regroupé(s) en '+p.tree_groups+' groupe(s) — zoomez pour afficher les arbres.';else if(p.truncated)resultCount.textContent=(p.tree_total||0)+' arbre(s) dans cette zone — affichage limité pour protéger les performances. Zoomez davantage.';else resultCount.textContent=items.length+' élément(s) dans la zone visible.'}).catch(()=>{if(seq===loadSeq)resultCount.textContent='Impossible de charger la carte. Réessayez ou zoomez sur une zone plus petite.'})},220)}map.on('moveend zoomend',loadMap);loadMap();locateBtn.onclick=()=>navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{me={lat:p.coords.latitude,lng:p.coords.longitude};if(meMarker)map.removeLayer(meMarker);meMarker=L.marker(me).addTo(map).bindPopup('Votre position');map.setView(me,16);locationStatus.textContent='Position obtenue.'},()=>locationStatus.textContent='Position refusée ou indisponible.');})();</script></div>""",ctx=ctx,f=f,**opts)
 
 @app.route('/trees/<int:tid>/map')
 @login_required
@@ -5466,10 +5489,13 @@ def android_map():
  if kpi=='watering': w.append("(t.watering_status='À arroser' OR t.watering_status='A arroser')")
  elif kpi=='watch': w.append("t.health_status IN ('À surveiller','A surveiller','Malade','Critique')")
  elif kpi=='healthy': w.append("t.health_status IN ('Bonne santé','Bon','Sain')")
+ try: map_limit=max(100,min(1200,int(request.args.get('limit','700') or 700)))
+ except (TypeError,ValueError): map_limit=700
+ total=c.execute("SELECT COUNT(*) n FROM trees t WHERE "+' AND '.join(w),args).fetchone()['n']
  rows=c.execute("""SELECT t.id,t.tree_code,t.species,t.species_id,t.latitude,t.longitude,t.association_id,
  s.name_fr species_name,a.name association_name,a.map_symbol,u.name planter_name
  FROM trees t LEFT JOIN species s ON s.id=t.species_id LEFT JOIN associations a ON a.id=t.association_id
- LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC",args).fetchall()
+ LEFT JOIN users u ON u.id=t.planted_by_user_id WHERE """+' AND '.join(w)+" ORDER BY t.id DESC LIMIT ?",args+[map_limit]).fetchall()
  trees=[dict(id=x['id'],code=x['tree_code'] or '',species=x['species'] or '',species_name=x['species_name'] or x['species'] or 'Arbre',
              lat=x['latitude'] if x['latitude'] is not None else 0.0,lng=x['longitude'] if x['longitude'] is not None else 0.0,symbol=(x['map_symbol'] or '🌳') if x['association_id'] else '🌳',
              association_id=x['association_id'],association_name=x['association_name'],planter_name=x['planter_name']) for x in rows]
@@ -5485,7 +5511,7 @@ def android_map():
   if aid and 'association_id' in columns(c,'events'): q+=' AND e.association_id=?'; args3=[aid]
   elif aid: q+=' AND (e.project_id IN (SELECT id FROM projects WHERE association_id=?))'; args3=[aid]
   events=[dict(x) for x in c.execute(q,args3).fetchall()]
- c.close(); return jsonify({'trees':trees,'zones':zones,'events':events})
+ c.close(); return jsonify({'trees':trees,'zones':zones,'events':events,'total':total,'truncated':bool(total>len(trees))})
 
 @app.get('/api/v1/trees/<int:tid>')
 @android_auth
