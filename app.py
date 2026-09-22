@@ -11,7 +11,7 @@ import qrcode
 BASE_DIR=os.path.abspath(os.path.dirname(__file__))
 DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-# RC16.18.3.2 — Unified Demo Database
+# RC16.18.3.3 — Environment Switch Fix
 # One MyTree server exposes two strictly separated SQLite databases.
 PRODUCTION_DB_PATH=os.environ.get('MYTREE_PRODUCTION_DB_PATH', os.path.join(DATA_DIR,'mytree.db'))
 DEMO_DB_PATH=os.environ.get('MYTREE_DEMO_DB_PATH', os.path.join(DATA_DIR,'mytree-demo.db'))
@@ -45,7 +45,7 @@ ensure_demo_database(DEMO_RESET_ON_START)
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18.3.2 — Unified Demo Database'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.3.3 — Environment Switch Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -596,11 +596,12 @@ def profile_home():
 
 def environment_switch_html():
  env=current_environment()
- if not session.get('uid') and not session.get('association_id'):
-  return ''
- if env=='demo':
-  return '<span style="white-space:nowrap;padding:4px 9px;border-radius:999px;background:#f5b942;color:#1f2d22;font-weight:800">🧪 MODE DÉMO</span> <a class="btn alt" style="white-space:nowrap" href="/environment/production">🟢 Revenir en Production</a>'
- return '<span style="white-space:nowrap;padding:4px 9px;border-radius:999px;background:#d8f3df;color:#174a2b;font-weight:800">🟢 PRODUCTION</span> <a class="btn alt" style="white-space:nowrap" href="/environment/demo">🟠 Mode Démo</a>'
+ prod_style='background:#d8f3df;color:#174a2b;font-weight:800' if env=='production' else 'background:#fff;color:#174a2b'
+ demo_style='background:#f5b942;color:#1f2d22;font-weight:800' if env=='demo' else 'background:#fff;color:#8a5a00'
+ return ('<span class="environment-switch" style="display:inline-flex;gap:6px;align-items:center;white-space:nowrap">'
+         '<a class="btn alt" style="'+prod_style+'" href="/environment/production" aria-label="Utiliser la base Production">🟢 Production</a>'
+         '<a class="btn alt" style="'+demo_style+'" href="/environment/demo" aria-label="Utiliser la base Démo">🟠 Démo</a>'
+         '</span>')
 
 
 def profile_identity():
@@ -1373,20 +1374,16 @@ def filter_options(c):
  return common_filter_options(c,filters_from_request())
 
 @app.route('/environment/<target>')
-@login_required
 def switch_environment(target):
- if not is_admin():
-  flash('Seul le Super Admin peut changer d’environnement.')
-  return redirect(profile_home())
+ # RC16.18.3.3: environment selection is available before login as well.
+ # The switch changes only this browser/session; it never changes the server globally.
  target=(target or '').strip().lower()
  if target not in ('production','demo'):
   flash('Environnement inconnu.')
-  return redirect(profile_home())
- if target=='demo':
-  if not ensure_demo_database(False):
-   flash('Base Démo indisponible : fichier seed absent.')
-   return redirect(profile_home())
- # Important: clear authentication/context before switching databases.
+  return redirect('/login')
+ if target=='demo' and not ensure_demo_database(False):
+  flash('Base Démo indisponible : fichier seed absent.')
+  return redirect('/login')
  session.clear()
  session['environment']=target
  session.permanent=True
@@ -1410,17 +1407,18 @@ def login():
    acc=c.execute("SELECT aa.*,a.name association_name,a.status association_status FROM association_accounts aa JOIN associations a ON a.id=aa.association_id WHERE lower(aa.login_id)=lower(?) AND aa.active=1 AND a.status='active'",(login_value,)).fetchone()
    success=bool(acc and check_password_hash(acc['password_hash'],password))
    if success:
-    session.clear(); session.permanent=request.form.get('remember')=='1'; session.update(account_type='association',association_account_id=acc['id'],association_id=acc['association_id'],name=acc['association_name'],role='association_account',lang=current_lang())
+    active_env=current_environment(); active_lang=current_lang()
+    session.clear(); session.permanent=request.form.get('remember')=='1'; session.update(account_type='association',association_account_id=acc['id'],association_id=acc['association_id'],name=acc['association_name'],role='association_account',lang=active_lang,environment=active_env)
     c.execute('UPDATE association_accounts SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),acc['id'])); c.commit(); c.close(); return redirect('/association/dashboard')
    c.close(); flash('ID Association ou mot de passe incorrect.')
   else:
    u=c.execute('SELECT u.*,r.name role_name FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE u.phone=? AND u.active=1',(login_value,)).fetchone(); success=bool(u and check_password_hash(u['password_hash'],password))
    c.execute('INSERT INTO login_history(user_id,login_value,success,ip_address,created_at) VALUES(?,?,?,?,?)',(u['id'] if u else None,login_value,1 if success else 0,request.headers.get('X-Forwarded-For',request.remote_addr),datetime.now().isoformat(timespec='seconds')))
    if success:
-    saved_lang=current_lang()
+    saved_lang=current_lang(); active_env=current_environment()
     session.clear()
     session.permanent=request.form.get('remember')=='1'
-    session.update(uid=u['id'],account_type='personal',name=u['name'] or user_display_name(u['first_name'],u['last_name']),role=u['role_name'] or u['role'] or 'volunteer')
+    session.update(uid=u['id'],account_type='personal',name=u['name'] or user_display_name(u['first_name'],u['last_name']),role=u['role_name'] or u['role'] or 'volunteer',environment=active_env)
     if request.cookies.get('mytree_lang_mode')=='manual':
      session['lang']=saved_lang
     c.execute('UPDATE users SET last_login=? WHERE id=?',(datetime.now().isoformat(timespec='minutes'),u['id']))
@@ -1428,7 +1426,7 @@ def login():
     target=request.form.get('next') or request.args.get('next')
     return redirect(target if target and target.startswith('/') else ('/' if is_admin() else '/volunteer'))
    c.commit(); c.close(); flash('Numéro de téléphone ou mot de passe incorrect.')
- return page('Connexion',r'''<div class="card login-card"><div style="text-align:center;margin-bottom:18px"><div style="font-size:44px">🌳 🇩🇿</div><h2>Connexion MyTree</h2><p class="sub">Choisissez votre type de compte.</p></div><div class="action-set" style="margin-bottom:16px"><a class="btn {{'alt' if login_type!='personal' else ''}}" href="/login?account_type=personal">👤 Personnel / Bénévole</a><a class="btn {{'alt' if login_type!='association' else ''}}" href="/login?account_type=association">🏛 Association</a></div><form method="post"><input type="hidden" name="account_type" value="{{login_type}}"><label>{{'ID Association' if login_type=='association' else 'Numéro de téléphone'}}<input name="login" autocomplete="username" required></label><label style="display:block;margin-top:14px">Mot de passe<input type="password" name="password" autocomplete="current-password" required></label><input type="hidden" name="next" value="{{request.args.get('next','')}}"><p><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="remember" value="1" style="width:auto"> Se souvenir de moi pendant 30 jours</label></p><div class="login-actions"><button class="btn">🔐 Se connecter</button>{% if login_type=='personal' %}<a class="btn alt" href="/public/register">👤 Créer un compte personnel</a><a class="btn alt" href="/forgot-password">🔑 Mot de passe oublié ?</a>{% endif %}<a class="btn alt" href="/public">← Retour</a></div></form></div>''',login_type=login_type)
+ return page('Connexion',r'''<div class="card login-card"><div style="text-align:center;margin-bottom:18px"><div style="font-size:44px">🌳 🇩🇿</div><h2>Connexion MyTree</h2><p class="sub">Choisissez votre type de compte.</p><div style="margin-top:12px">{{environment_switch_html()|safe}}</div></div><div class="action-set" style="margin-bottom:16px"><a class="btn {{'alt' if login_type!='personal' else ''}}" href="/login?account_type=personal">👤 Personnel / Bénévole</a><a class="btn {{'alt' if login_type!='association' else ''}}" href="/login?account_type=association">🏛 Association</a></div><form method="post"><input type="hidden" name="account_type" value="{{login_type}}"><label>{{'ID Association' if login_type=='association' else 'Numéro de téléphone'}}<input name="login" autocomplete="username" required></label><label style="display:block;margin-top:14px">Mot de passe<input type="password" name="password" autocomplete="current-password" required></label><input type="hidden" name="next" value="{{request.args.get('next','')}}"><p><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="remember" value="1" style="width:auto"> Se souvenir de moi pendant 30 jours</label></p><div class="login-actions"><button class="btn">🔐 Se connecter</button>{% if login_type=='personal' %}<a class="btn alt" href="/public/register">👤 Créer un compte personnel</a><a class="btn alt" href="/forgot-password">🔑 Mot de passe oublié ?</a>{% endif %}<a class="btn alt" href="/public">← Retour</a></div></form></div>''',login_type=login_type,environment_switch_html=environment_switch_html)
 
 @app.route('/forgot-password',methods=['GET','POST'])
 def forgot_password():
@@ -1537,7 +1535,7 @@ def register():
 
 @app.route('/logout')
 def logout():
- target=request.args.get('next') or '/public'; session.clear(); return redirect(target if target.startswith('/') else '/public')
+ target=request.args.get('next') or '/public'; active_env=current_environment(); session.clear(); session['environment']=active_env; return redirect(target if target.startswith('/') else '/public')
 
 @app.route('/')
 def dashboard():
