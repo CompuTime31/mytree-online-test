@@ -3,7 +3,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from functools import wraps
 from datetime import datetime, date, timedelta
-import sqlite3, os, io, json, shutil, tempfile, urllib.request, urllib.parse, secrets, smtplib, base64
+import sqlite3, os, io, json, shutil, tempfile, urllib.request, urllib.parse, secrets, smtplib, base64, subprocess, sys
 from email.message import EmailMessage
 from data_catalogs import SPECIES_CATALOG, EQUIPMENT_CATALOG
 import qrcode
@@ -11,7 +11,7 @@ import qrcode
 BASE_DIR=os.path.abspath(os.path.dirname(__file__))
 DATA_DIR=os.environ.get('MYTREE_DATA_DIR', BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-# RC16.18.3.3 — Environment Switch Fix
+# RC16.18.3.4 — Demo Seed Auto-Rebuild Fix
 # One MyTree server exposes two strictly separated SQLite databases.
 PRODUCTION_DB_PATH=os.environ.get('MYTREE_PRODUCTION_DB_PATH', os.path.join(DATA_DIR,'mytree.db'))
 DEMO_DB_PATH=os.environ.get('MYTREE_DEMO_DB_PATH', os.path.join(DATA_DIR,'mytree-demo.db'))
@@ -34,18 +34,34 @@ def current_db_path():
  return DEMO_DB_PATH if current_environment()=='demo' else PRODUCTION_DB_PATH
 
 def ensure_demo_database(force=False):
- if not os.path.exists(DEMO_SEED_DB):
+ # RC16.18.3.4: the Demo environment must remain self-healing on Railway/Windows.
+ # Prefer the packaged seed, but if deployment omitted the binary seed, rebuild it
+ # deterministically from app.py + generate_large_demo_db.py into the writable DATA_DIR.
+ if not force and os.path.exists(DEMO_DB_PATH) and os.path.getsize(DEMO_DB_PATH)>0:
+  return True
+ os.makedirs(os.path.dirname(DEMO_DB_PATH) or BASE_DIR,exist_ok=True)
+ if os.path.exists(DEMO_SEED_DB) and os.path.getsize(DEMO_SEED_DB)>0:
+  try:
+   shutil.copy2(DEMO_SEED_DB,DEMO_DB_PATH)
+   return os.path.exists(DEMO_DB_PATH) and os.path.getsize(DEMO_DB_PATH)>0
+  except OSError:
+   pass
+ generator=os.path.join(BASE_DIR,'generate_large_demo_db.py')
+ if not os.path.exists(generator):
   return False
- if force or not os.path.exists(DEMO_DB_PATH) or os.path.getsize(DEMO_DB_PATH)==0:
-  os.makedirs(os.path.dirname(DEMO_DB_PATH) or BASE_DIR,exist_ok=True)
-  shutil.copy2(DEMO_SEED_DB,DEMO_DB_PATH)
- return True
+ try:
+  env=os.environ.copy()
+  env['MYTREE_DEMO_DB']=DEMO_DB_PATH
+  subprocess.run([sys.executable,generator],cwd=BASE_DIR,env=env,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=120)
+  return os.path.exists(DEMO_DB_PATH) and os.path.getsize(DEMO_DB_PATH)>0
+ except (OSError,subprocess.SubprocessError):
+  return False
 
 ensure_demo_database(DEMO_RESET_ON_START)
 app=Flask(__name__)
 app.secret_key=os.environ.get('MYTREE_SECRET','change-this-secret')
 app.permanent_session_lifetime=timedelta(days=30)
-APP_VERSION='v2.0 Alpha 4 — RC16.18.3.3 — Environment Switch Fix'
+APP_VERSION='v2.0 Alpha 4 — RC16.18.3.4 — Demo Seed Auto-Rebuild Fix'
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS roles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,label TEXT NOT NULL,description TEXT,color TEXT DEFAULT '#2e7b47',level INTEGER DEFAULT 10,active INTEGER DEFAULT 1);
@@ -1382,7 +1398,7 @@ def switch_environment(target):
   flash('Environnement inconnu.')
   return redirect('/login')
  if target=='demo' and not ensure_demo_database(False):
-  flash('Base Démo indisponible : fichier seed absent.')
+  flash('Base Démo indisponible : création automatique impossible.')
   return redirect('/login')
  session.clear()
  session['environment']=target
